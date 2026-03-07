@@ -9366,9 +9366,18 @@ updateMegaDimension()
 window.addEventListener('load', function() {
 
 
+    
+
+
     loadGame();
     getSeed();
     seasonCheck();
+
+
+    if (saved.shopApricornMemoryRotationWhite == undefined) {
+            saved.lastShopApricornReset = 100
+    updateItemShop()
+    }
 
     //this safefail prevents loading into unexistiing areas
     if (!areas[saved.currentArea]) saved.currentArea = undefined
