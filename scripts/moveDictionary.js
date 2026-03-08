@@ -5386,7 +5386,6 @@ move.flameBurst = {
     power: t4Base+30,
     info: function() {return `Inflicts ${tagBurn} to the entire team`},
     hitEffect: function(target) { moveBuff(target,'burn',"team") },
-    unaffectedBy: [ability.sheerForce.id],
 }
 
 move.morningSun = { 
