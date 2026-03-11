@@ -2435,7 +2435,7 @@ function exploreCombatPlayer() {
 
             let attackerStars = attacker.bst.atk
             if (areas[saved.currentArea].id == areas.training.id) attackerStars = returnDivisionStars(attacker, "atk")
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.atk-1,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.atk-2,1)
 
             let defenderStars = defender.bst.def
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(defender)
@@ -2461,7 +2461,7 @@ function exploreCombatPlayer() {
             
             let attackerStars = attacker.bst.satk
             if (areas[saved.currentArea].id == areas.training.id) attackerStars = returnDivisionStars(attacker, "satk")
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.satk-1,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.satk-2,1)
 
             let defenderStars = defender.bst.sdef
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(defender)
@@ -3468,7 +3468,7 @@ function exploreCombatWild() {
 
             let defenderStars = pkmn[ team[exploreActiveMember].pkmn.id ].bst.def
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(pkmn[ saved.currentPkmn ])
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.def-1,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.def-2,1)
 
             totalPower = 
             ( move[nextMoveWild].power + Math.max(0, (attackerStars * 30) - (  (defenderStars * 30) * Math.pow(1.1, pkmn[ team[exploreActiveMember].pkmn.id ].ivs.def)  ) )  )
@@ -3495,7 +3495,7 @@ function exploreCombatWild() {
 
             let defenderStars = pkmn[ team[exploreActiveMember].pkmn.id ].bst.sdef
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(pkmn[ saved.currentPkmn ])
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.sdef-1,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.sdef-2,1)
 
             totalPower = 
             ( move[nextMoveWild].power + Math.max(0, (attackerStars * 30) - (  (defenderStars * 30) * Math.pow(1.1, pkmn[ team[exploreActiveMember].pkmn.id ].ivs.sdef)  ) )  )
@@ -7492,7 +7492,7 @@ function changePkmnStarsign(){
     document.getElementById("tooltipMid").innerHTML = `
     <div style="height:1.5rem; margin-bottom:0.5rem; display:flex; justify-content:center;align-items:center; margin-top:-0rem" class="auto-build-confirm" onclick='pkmn[currentEditedPkmn].starsign = undefined;document.getElementById("pkmn-editor-sprite").style.filter = "hue-rotate(0deg)"; closeTooltip(); updatePokedex(); if (saved.currentArea == undefined) updatePreviewTeam()'>Remove star sign</div>
     <div style="height:1.5rem; margin-bottom:0.5rem; display:flex; justify-content:center;align-items:center; margin-top:-0rem" class="auto-build-confirm" onclick='if (!previewStarsignShiny) {previewStarsignShiny=true; changePkmnStarsign(); return} if (previewStarsignShiny) {previewStarsignShiny=false; changePkmnStarsign(); return}'>Switch shiny</div><div id="starsign-list" ></div>
-    
+    Star signs are unlocked for all the evolutive family as long as they are shiny
     `
 
 
@@ -7502,12 +7502,12 @@ function changePkmnStarsign(){
     const div = document.createElement(`div`)
 
 
-    let pkmnImg = `<img src="img/pkmn/sprite/${id}.png">`
-    if (previewStarsignShiny) pkmnImg = `<img src="img/pkmn/shiny/${id}.png">`
+    let pkmnImg = `<img class="sprite-trim" src="img/pkmn/sprite/${id}.png">`
+    if (previewStarsignShiny) pkmnImg = `<img class="sprite-trim" src="img/pkmn/shiny/${id}.png">`
 
     if (!pkmn[id].starsignList.includes(i)) {
-    pkmnImg = `<img style="filter:brightness(0)" src="img/pkmn/sprite/${id}.png">`
-    if (previewStarsignShiny) pkmnImg = `<img style="filter:brightness(0)" src="img/pkmn/shiny/${id}.png">`
+    pkmnImg = `<img class="sprite-trim" style="filter:brightness(0)" src="img/pkmn/sprite/${id}.png">`
+    if (previewStarsignShiny) pkmnImg = `<img class="sprite-trim" style="filter:brightness(0)" src="img/pkmn/shiny/${id}.png">`
     }
 
 
@@ -7576,6 +7576,55 @@ function giveStarsign(id,mode){
     const randomStar = availableStars[Math.floor(Math.random() * availableStars.length)]
     
     pkmn[id].starsignList.push(randomStar)
+    updateFamilyStarsign()
+}
+
+
+
+function updateFamilyStarsign() {
+    // Track which families we've already processed to avoid duplicates
+    const processedFamilies = new Set();
+    
+    for (const i in pkmn) {
+        
+        // Skip if this Pokémon has no star signs
+        if (!pkmn[i].starsignList || pkmn[i].starsignList.length === 0) continue;
+        
+        // Get the evolution family
+        const family = getEvolutionFamily(pkmn[i]);
+        
+        // Create a unique identifier for this family (use sorted IDs)
+        const familyIds = Array.from(family).map(p => {
+            // Find the key/id of this pokemon object
+            for (const key in pkmn) {
+                if (pkmn[key] === p) return key;
+            }
+        }).sort().join(',');
+        
+        // Skip if we've already processed this family
+        if (processedFamilies.has(familyIds)) continue;
+        processedFamilies.add(familyIds);
+        
+        // Collect all unique star signs from all shiny family members
+        const familyStars = new Set();
+        for (const familyMember of family) {
+            if (familyMember.starsignList) {
+                familyMember.starsignList.forEach(star => familyStars.add(star));
+            }
+        }
+        
+        // Propagate all collected star signs to all family members
+        for (const familyMember of family) {
+            if (familyMember.starsignList == undefined) {
+                familyMember.starsignList = [];
+            }
+            for (const star of familyStars) {
+                if (!familyMember.starsignList.includes(star)) {
+                    familyMember.starsignList.push(star);
+                }
+            }
+        }
+    }
 }
 
 
@@ -9788,6 +9837,9 @@ window.addEventListener('load', function() {
     arceusCheck()
     assignShopDecor()
     assignShopApricorn()
+
+
+    updateFamilyStarsign()
 
     if (saved.arenaCard1 == undefined) createArenaCards()
     //updateTeamExp()

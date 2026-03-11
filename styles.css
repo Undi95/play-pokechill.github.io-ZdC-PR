@@ -6480,6 +6480,8 @@ transform: translateY(-1rem);
     flex-direction: column;
     cursor: pointer;
     transition: 0.1;
+    height: 6rem;
+    width: 6rem;
 }
 
 #starsign-list div:hover{
