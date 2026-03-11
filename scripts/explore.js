@@ -2435,7 +2435,7 @@ function exploreCombatPlayer() {
 
             let attackerStars = attacker.bst.atk
             if (areas[saved.currentArea].id == areas.training.id) attackerStars = returnDivisionStars(attacker, "atk")
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.atk,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.atk-1,1)
 
             let defenderStars = defender.bst.def
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(defender)
@@ -2461,7 +2461,7 @@ function exploreCombatPlayer() {
             
             let attackerStars = attacker.bst.satk
             if (areas[saved.currentArea].id == areas.training.id) attackerStars = returnDivisionStars(attacker, "satk")
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.satk,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") attackerStars = Math.max(defender.bst.satk-1,1)
 
             let defenderStars = defender.bst.sdef
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(defender)
@@ -3468,7 +3468,7 @@ function exploreCombatWild() {
 
             let defenderStars = pkmn[ team[exploreActiveMember].pkmn.id ].bst.def
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(pkmn[ saved.currentPkmn ])
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.def,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.def-1,1)
 
             totalPower = 
             ( move[nextMoveWild].power + Math.max(0, (attackerStars * 30) - (  (defenderStars * 30) * Math.pow(1.1, pkmn[ team[exploreActiveMember].pkmn.id ].ivs.def)  ) )  )
@@ -3495,7 +3495,7 @@ function exploreCombatWild() {
 
             let defenderStars = pkmn[ team[exploreActiveMember].pkmn.id ].bst.sdef
             if (areas[saved.currentArea].id == areas.training.id) defenderStars = returnDivisionStars(pkmn[ saved.currentPkmn ])
-            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.sdef,1)
+            if (saved.weatherTimer>0 && saved.weather=="weirdRoom") defenderStars = Math.max(pkmn[ saved.currentPkmn ].bst.sdef-1,1)
 
             totalPower = 
             ( move[nextMoveWild].power + Math.max(0, (attackerStars * 30) - (  (defenderStars * 30) * Math.pow(1.1, pkmn[ team[exploreActiveMember].pkmn.id ].ivs.sdef)  ) )  )
@@ -4978,7 +4978,8 @@ function updatePokedex(){
         if (document.getElementById(`pokedex-filter-level`).value !== "all" && !( pkmn[i].level <= (document.getElementById(`pokedex-filter-level`).value) &&  pkmn[i].level >= (document.getElementById(`pokedex-filter-level`).value-19) )    ) continue
         if (document.getElementById(`pokedex-filter-ability`).value !== "all" && document.getElementById(`pokedex-filter-ability`).value!=4 && ability[pkmn[i].ability].rarity !=  document.getElementById(`pokedex-filter-ability`).value   ) continue
         if (document.getElementById(`pokedex-filter-ability`).value == "4" && (pkmn[i].hiddenAbilityUnlocked == true ||  pkmn[i].hiddenAbility==undefined) ) continue        
-        if ((v = document.getElementById("pokedex-filter-shiny").value) !== "all" && pkmn[i].shiny != (v === "true" ? true : undefined)) continue;
+        
+        
         if (document.getElementById(`pokedex-filter-division`).value !== "all" && returnPkmnDivision(pkmn[i]) !=  document.getElementById(`pokedex-filter-division`).value   ) continue
         if (document.getElementById(`pokedex-filter-tag`).value !== "all" && document.getElementById(`pokedex-filter-tag`).value !== "none" && pkmn[i].tag!==document.getElementById(`pokedex-filter-tag`).value ) continue
         if (document.getElementById(`pokedex-filter-tag`).value == "none" && pkmn[i].tag!=undefined ) continue
@@ -4987,6 +4988,12 @@ function updatePokedex(){
 
         if (document.getElementById(`pokedex-filter-signature`).value == "false" && pkmn[i].signature==undefined ) continue
         if (document.getElementById(`pokedex-filter-signature`).value == "egg" && pkmn[i].eggMove==undefined ) continue
+
+        if (document.getElementById(`pokedex-filter-shiny`).value == "true" && pkmn[i].shiny != true) continue
+        if (document.getElementById(`pokedex-filter-shiny`).value == "false" && pkmn[i].shiny == true) continue
+        if (document.getElementById(`pokedex-filter-shiny`).value == "sign" && pkmn[i].starsignList == undefined) continue
+        if (document.getElementById(`pokedex-filter-shiny`).value == "signall" && giveStarsign(i,"check") != "complete") continue
+
         
         let missingEvolution = false;
         let missingLevelEvolution = false;
@@ -7484,7 +7491,7 @@ function changePkmnStarsign(){
 
     document.getElementById("tooltipMid").innerHTML = `
     <div style="height:1.5rem; margin-bottom:0.5rem; display:flex; justify-content:center;align-items:center; margin-top:-0rem" class="auto-build-confirm" onclick='pkmn[currentEditedPkmn].starsign = undefined;document.getElementById("pkmn-editor-sprite").style.filter = "hue-rotate(0deg)"; closeTooltip(); updatePokedex(); if (saved.currentArea == undefined) updatePreviewTeam()'>Remove star sign</div>
-    <div style="height:1.5rem; margin-bottom:0.5rem; display:flex; justify-content:center;align-items:center; margin-top:-0rem" class="auto-build-confirm" onclick='if (!previewStarsignShiny) {previewStarsignShiny=true; changePkmnStarsign(); return} if (previewStarsignShiny) {previewStarsignShiny=false; changePkmnStarsign(); return}'>Preview shiny</div><div id="starsign-list" ></div>
+    <div style="height:1.5rem; margin-bottom:0.5rem; display:flex; justify-content:center;align-items:center; margin-top:-0rem" class="auto-build-confirm" onclick='if (!previewStarsignShiny) {previewStarsignShiny=true; changePkmnStarsign(); return} if (previewStarsignShiny) {previewStarsignShiny=false; changePkmnStarsign(); return}'>Switch shiny</div><div id="starsign-list" ></div>
     
     `
 
@@ -7521,7 +7528,15 @@ function changePkmnStarsign(){
     pkmn[id].starsign = i
 
 
+    if (previewStarsignShiny) pkmn[id].shinyDisabled = false
+    if (!previewStarsignShiny) pkmn[id].shinyDisabled = true
+
+    if (previewStarsignShiny) document.getElementById("pkmn-editor-sprite").src = `img/pkmn/shiny/${id}.png` 
+    if (!previewStarsignShiny) document.getElementById("pkmn-editor-sprite").src = `img/pkmn/sprite/${id}.png` 
+
     document.getElementById("pkmn-editor-sprite").style.filter = `hue-rotate(${starsign[pkmn[id].starsign].hue}deg)`
+
+
 
 
     if (saved.currentArea == undefined) updatePreviewTeam()
