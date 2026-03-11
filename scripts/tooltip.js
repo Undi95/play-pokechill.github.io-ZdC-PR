@@ -857,7 +857,7 @@ frontierArray.sort((a, b) => a.data.tier - b.data.tier);
         if (ttdata === `ModAfk`) document.getElementById("tooltipBottom").innerHTML = `Fatigue damage is reduced by x3<br><br>There are no side-effects to this modifier`
 
         if (ttdata === `curry`) document.getElementById("tooltipTitle").innerHTML = `Curry`
-        if (ttdata === `curry`) document.getElementById("tooltipBottom").innerHTML = `Every 12h you can select up to three abilities to be active for your entire team during raids for 1 hour`
+        if (ttdata === `curry`) document.getElementById("tooltipBottom").innerHTML = `Every 12h you can select up to three abilities to be active for your entire team during raids for 1 hour. These abilities follow the same rules as regualr abilities, and wont stack with already existing ones`
 
 
         openTooltip()
