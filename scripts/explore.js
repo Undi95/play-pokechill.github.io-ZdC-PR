@@ -8580,13 +8580,14 @@ training.nature = {
 
         const natureList = []
 
-        if (pkmn[saved.trainingPokemon].bst.atk<=pkmn[saved.trainingPokemon].bst.satk && pkmn[saved.trainingPokemon].nature != "adamant") natureList.push("adamant")
-        if (pkmn[saved.trainingPokemon].bst.satk<=pkmn[saved.trainingPokemon].bst.atk && pkmn[saved.trainingPokemon].nature != "modest") natureList.push("modest")
-        if (pkmn[saved.trainingPokemon].bst.def>1 && pkmn[saved.trainingPokemon].bst.sdef>1 && pkmn[saved.trainingPokemon].nature != "jolly") natureList.push("jolly")
-        if (pkmn[saved.trainingPokemon].bst.spe>1 && pkmn[saved.trainingPokemon].nature != "relaxed") natureList.push("relaxed")
-        if (pkmn[saved.trainingPokemon].bst.atk>1 && pkmn[saved.trainingPokemon].bst.satk>1 && pkmn[saved.trainingPokemon].nature != "quiet") natureList.push("quiet")
-        if (pkmn[saved.trainingPokemon].bst.def>1 && pkmn[saved.trainingPokemon].bst.sdef>1 && pkmn[saved.trainingPokemon].nature != "bold") natureList.push("bold")
+        if (pkmn[saved.trainingPokemon].bst.atk<=pkmn[saved.trainingPokemon].bst.satk && pkmn[saved.trainingPokemon].nature != "adamant" && pkmn[saved.trainingPokemon].bst.atk<6) natureList.push("adamant")
+        if (pkmn[saved.trainingPokemon].bst.satk<=pkmn[saved.trainingPokemon].bst.atk && pkmn[saved.trainingPokemon].nature != "modest" && pkmn[saved.trainingPokemon].bst.satk<6) natureList.push("modest")
+        if (pkmn[saved.trainingPokemon].bst.def>1 && pkmn[saved.trainingPokemon].bst.sdef>1 && pkmn[saved.trainingPokemon].nature != "jolly" && pkmn[saved.trainingPokemon].bst.spe<6) natureList.push("jolly")
+        if (pkmn[saved.trainingPokemon].bst.spe>1 && pkmn[saved.trainingPokemon].nature != "relaxed" && pkmn[saved.trainingPokemon].bst.hp<6) natureList.push("relaxed")
+        if (pkmn[saved.trainingPokemon].bst.atk>1 && pkmn[saved.trainingPokemon].bst.satk>1 && pkmn[saved.trainingPokemon].nature != "quiet" && pkmn[saved.trainingPokemon].bst.hp<6) natureList.push("quiet")
+        if (pkmn[saved.trainingPokemon].bst.def>1 && pkmn[saved.trainingPokemon].bst.sdef>1 && pkmn[saved.trainingPokemon].nature != "bold" && pkmn[saved.trainingPokemon].bst.def<6 && pkmn[saved.trainingPokemon].bst.sdef<6) natureList.push("bold")
 
+            console.log(natureList)
     
         let pickedNature = arrayPick(natureList)
         pkmn[saved.trainingPokemon].nature = pickedNature
