@@ -2001,17 +2001,13 @@ const nature = {
 
 
 
-function returnStatDots(id, stat){
-
+function returnStatDotsBase(id, stat){
     const val = pkmn[id].bst[stat];
     const max = 6;
-
-    const filled = Array(val).fill("★ ").join(" ");
-    const empty  = Array(max - val).fill("·").join(" ");
-
-    if (val === max) return `<span style="color:#29A1E5">${filled}</span>`;
-
-    return `<span style="color:#29A1E5">${filled}</span><strong style="margin-left: 0.3rem">${empty}</strong>`;
+    const filled = Array(val).fill("★").map(star => `<span style="color:#29A1E5">${star}</span>`).join(" ");
+    const empty  = Array(max - val).fill("·").map(dot => `<span>${dot}</span>`).join(" ");
+    if (val === max) return filled;
+    return `${filled}${empty ? ' ' + empty : ''}`;
 }
 
 function returnStatDots(id, stat){
