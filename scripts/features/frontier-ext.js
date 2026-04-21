@@ -5369,12 +5369,26 @@
       const el = document.getElementById("prevent-tooltip-exit");
       if (el) try { el.remove(); } catch (e) {}
     };
+    // Detect whether the current tooltip belongs to our overlay. Any
+    // ZdC-rendered modal injects at least one element whose class name
+    // starts with `frontier-ext-` (the Factory rental grid, the Pike
+    // door picker, the Arena verdict card, the Pyramid floor map…).
+    // Vanilla tooltips — including the mid-combat enemy inspection
+    // panel — don't. Gating the lock on this avoids blocking exits on
+    // non-ZdC tooltips even while a run is active.
+    const isFrontierTooltip = () => {
+      const box = document.getElementById("tooltipBox");
+      if (!box) return false;
+      if (box.classList.contains("frontier-ext-factory-open")) return true;
+      if (box.classList.contains("frontier-ext-pyramid-open")) return true;
+      return !!box.querySelector('[class*="frontier-ext-"]');
+    };
     const apply = () => {
       try {
         const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
         const bg = document.getElementById("tooltipBackground");
         const box = document.getElementById("tooltipBox");
-        if (run) {
+        if (run && isFrontierTooltip()) {
           if (bg)  bg.classList.add(lockClass);
           if (box) box.classList.add(lockClass);
           ensureBlocker();
