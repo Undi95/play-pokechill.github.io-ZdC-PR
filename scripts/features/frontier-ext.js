@@ -753,16 +753,6 @@
     "aceTrainerSnowF","aromaLady","battlegirl","beauty","birdkeeper",
     "hexmaniac","madame","psychic","rocketGruntF",
   ];
-  const TRAINER_NAMES_FR_M = [
-    "Jean-Baptiste","Hugo","Mathis","Alexandre","Tristan","Raphaël","Nicolas",
-    "Arthur","Lucas","Gabriel","Noah","Elias","Maxime","Julien","Antoine",
-    "Baptiste","Victor","Clément","Théo","Paul",
-  ];
-  const TRAINER_NAMES_FR_F = [
-    "Léa","Océane","Zoé","Emma","Camille","Chloé","Sarah","Juliette","Manon",
-    "Inès","Louna","Jade","Alice","Lucie","Élise","Marion","Noémie","Clara",
-    "Sophie","Anaïs",
-  ];
   const TRAINER_NAMES_EN_M = [
     "Jake","Hugh","Max","Alex","Trent","Cam","Rafe","Nick","Arthur","Luke",
     "Gabe","Noah","Eli","Mark","Jason","Sam","Victor","Leo","Theo","Paul",
@@ -2733,6 +2723,35 @@
       .frontier-ext-pike-hp-pill .st.poisoned { background: #8e44ad; color: #fff; }
       .frontier-ext-pike-hp-pill .st.burn { background: #c0392b; color: #fff; }
       .frontier-ext-pike-hp-pill .st.paralysis { background: #f39c12; color: #000; }
+      /* Heal-on-full feedback: bright 3-pulse glow on pills that were
+         just touched by a heal door while already at 100% HP. Tells
+         the player the heal IS applied (not a bug) — just redundant.
+         Bright green-gold shadow + background tint so it reads on the
+         dark Pike modal background. */
+      .frontier-ext-pike-hp-pill.heal-full-flash {
+        animation: frontierPikeHealFullFlash 2.4s ease-out 1;
+        border-color: rgba(180, 255, 150, 1);
+      }
+      @keyframes frontierPikeHealFullFlash {
+        0%, 100% {
+          background: rgba(0, 0, 0, 0.45);
+          box-shadow:
+            0 0 0 0 rgba(180, 255, 150, 0),
+            inset 0 0 0 0 rgba(180, 255, 150, 0);
+        }
+        15%, 50%, 85% {
+          background: rgba(90, 200, 100, 0.55);
+          box-shadow:
+            0 0 22px 6px rgba(180, 255, 150, 0.95),
+            inset 0 0 14px rgba(255, 255, 200, 0.75);
+        }
+        30%, 65% {
+          background: rgba(0, 0, 0, 0.45);
+          box-shadow:
+            0 0 8px 2px rgba(180, 255, 150, 0.35),
+            inset 0 0 6px rgba(180, 255, 150, 0.25);
+        }
+      }
 
       .frontier-ext-pike-doors {
         display: flex;
@@ -2864,6 +2883,16 @@
       .frontier-ext-pike-event.heal .headline { color: #baf5c9; }
       .frontier-ext-pike-event.trap .icon { color: #e74c3c; }
       .frontier-ext-pike-event.trap .headline { color: #ffb3b3; }
+      /* Hostile-Pokémon sprite inside the status_species event card.
+         Scaled 3× and pixel-rendered so the Gen-1-style sprites look
+         crisp at the modal size; subtle red glow aligns with the
+         "attack" framing of the event. */
+      .frontier-ext-pike-hostile-sprite {
+        width: auto;
+        height: 4.2rem;
+        image-rendering: pixelated;
+        filter: drop-shadow(0 0 8px rgba(231, 76, 60, 0.65));
+      }
       .frontier-ext-pike-event .body {
         text-align: center;
         font-size: 0.9rem;
@@ -5425,18 +5454,23 @@
         try { el.remove(); } catch (e) {}
       }
     };
-    // Detect whether the current tooltip belongs to our overlay. Any
-    // ZdC-rendered modal injects at least one element whose class name
-    // starts with `frontier-ext-` (the Factory rental grid, the Pike
-    // door picker, the Arena verdict card, the Pyramid floor map…).
-    // Vanilla tooltips — including the mid-combat enemy inspection
-    // panel — don't. Gating the lock on this avoids blocking exits on
-    // non-ZdC tooltips even while a run is active.
+    // Detect whether the current tooltip belongs to our overlay by
+    // looking at the CURRENT tooltip content only — any ZdC-rendered
+    // modal injects at least one element whose class name starts with
+    // `frontier-ext-`. Vanilla tooltips (item inspection, Pokémon
+    // inspection, delete-data confirm, …) don't carry that namespace.
+    //
+    // Earlier versions also checked `box.classList` for the Factory /
+    // Pyramid sizing classes, but those classes aren't managed by
+    // apply() and can stay "stale" after a Factory/Pyramid modal
+    // closed → the next vanilla tooltip (e.g. right-clicking a held
+    // item inside the team editor during a run) would wrongly match
+    // as a frontier tooltip, get the lock applied, hide the × and
+    // trap the player. Content-only detection avoids that class of
+    // false positive.
     const isFrontierTooltip = () => {
       const box = document.getElementById("tooltipBox");
       if (!box) return false;
-      if (box.classList.contains("frontier-ext-factory-open")) return true;
-      if (box.classList.contains("frontier-ext-pyramid-open")) return true;
       return !!box.querySelector('[class*="frontier-ext-"]');
     };
     const apply = () => {
@@ -6521,11 +6555,15 @@
     return def.label;
   }
   function pyramidItemSprite(id) {
-    // Use Pokechill's sprite only when the underlying item exists in the
-    // game's item registry (choiceBand / leftovers / quickClaw do).
-    // Otherwise return null — the UI renders a plain label card.
+    // Pokechill doesn't store a `.sprite` field on its item entries —
+    // tooltip.js:949 just uses `img/items/${id}.png` directly. Mirror
+    // that convention: when the id exists in the game's registry we
+    // know the PNG is present, so return the convention path. Custom
+    // Pyramid-only items (berries, potions, revives) aren't in
+    // `item[]` → return null and the bag UI falls back to the 📦
+    // placeholder.
     if (typeof item === "undefined" || !item[id]) return null;
-    return item[id].sprite || null;
+    return `img/items/${id}.png`;
   }
 
   function isPyramidFacility(facility) {
@@ -6927,8 +6965,16 @@
       const statusPill = status
         ? `<span class="st ${status}">${statusLabel[status] || status}</span>`
         : "";
+      // Heal-flash glow: same flag as renderPikeHpSummary reads. Any
+      // heal path (nurse, partial, tough-post-combat, Pyramid bag
+      // item…) sets pikeTeam[sl].healJustApplied = true; the very
+      // next HP render (this modal, the door picker, the floor map,
+      // whichever renders first) lights that slot up with a pulse
+      // and clears the flag so subsequent renders don't replay.
+      const healFlash = ps.healJustApplied ? " heal-full-flash" : "";
+      if (ps.healJustApplied) ps.healJustApplied = false;
       cells.push(`
-        <span class="frontier-ext-pike-hp-pill ${cls}">
+        <span class="frontier-ext-pike-hp-pill ${cls}${healFlash}">
           ${monName}: ${ratio <= 0 ? "KO" : pct + "%"}
           <span class="bar"><span style="width:${barWidth}%"></span></span>
           ${statusPill}
@@ -7023,8 +7069,32 @@
         // Roll a random loot item from the Pyramid item registry, show
         // the "Prendre" popup, and on confirm push into the Combat Bag
         // (respecting the 10-distinct-items cap).
+        //
+        // Held items DON'T stack (single copy owned at a time). If the
+        // initial roll lands on a held item the player already has in
+        // the bag, re-roll up to N times until we find something
+        // fresh — better UX than showing a "Prendre" screen for an
+        // item that would be silently abandoned on click. If every
+        // re-roll collides (player already owns every held id the
+        // pool can offer), fall back to a consumable.
         state.grid[state.playerY][state.playerX] = PYR_TILES.EMPTY;
-        const pick = PYRAMID_ITEMS[Math.floor(Math.random() * PYRAMID_ITEMS.length)];
+        const bag = pyramidEnsureBag(run);
+        const ownedHeld = new Set(
+          bag.items
+            .map((it) => it.id)
+            .filter((id) => { const d = pyramidItemDef(id); return d && d.kind === "held"; })
+        );
+        const isDuplicateHeld = (def) => def.kind === "held" && ownedHeld.has(def.id);
+        let pick = PYRAMID_ITEMS[Math.floor(Math.random() * PYRAMID_ITEMS.length)];
+        let safety = 0;
+        while (isDuplicateHeld(pick) && safety < 10) {
+          pick = PYRAMID_ITEMS[Math.floor(Math.random() * PYRAMID_ITEMS.length)];
+          safety++;
+        }
+        if (isDuplicateHeld(pick)) {
+          const consumables = PYRAMID_ITEMS.filter((d) => d.kind !== "held");
+          if (consumables.length) pick = consumables[Math.floor(Math.random() * consumables.length)];
+        }
         showPyramidItemFoundModal(facility, pick);
         run.pyramidPendingAfterEvent = true;
         return;
@@ -7520,21 +7590,14 @@
       mid.querySelectorAll("[data-pyr-drop]").forEach((btn) => {
         btn.onclick = () => {
           const dropId = btn.dataset.pyrDrop;
-          // Drop ONE unit per click. If the entry hits 0, it's removed
-          // and a distinct-id slot is freed, so the new item fits; if
-          // the entry still has units left, the bag is still full and
-          // the picker re-opens so the player can drop something else
-          // (or abandon the find via "Jeter le nouvel objet").
-          const entry = run.combatBag.items.find((it) => it.id === dropId);
-          if (entry) {
-            entry.count = (entry.count || 1) - 1;
-            if (entry.count <= 0) {
-              run.combatBag.items = run.combatBag.items.filter((it) => it !== entry);
-            }
-          }
-          const added = pyramidAddToBag(run, newItemId);
-          if (added) pyramidAfterEvent(facility);
-          else showPyramidBagFullPicker(facility, newItemId);
+          // Drop the ENTIRE stack of the chosen id. Previously we
+          // decremented by 1, but that left stacked consumables
+          // (e.g. 2× Baie Ceriz) behind after click → bag still full
+          // → picker re-opens and the player has to click again.
+          // Per user rule: one click frees the slot immediately.
+          run.combatBag.items = run.combatBag.items.filter((it) => it.id !== dropId);
+          pyramidAddToBag(run, newItemId);
+          pyramidAfterEvent(facility);
         };
       });
     }
@@ -7574,24 +7637,29 @@
     if (def.kind === "cure") {
       if (ps.status !== def.cure) return false;
       ps.status = null;
+      ps.healJustApplied = true; // glow flag
       return true;
     }
     if (def.kind === "heal") {
       if ((ps.hpRatio || 0) <= 0) return false;           // fainted — need revive
       if ((ps.hpRatio || 0) >= 1) return false;           // already full
       ps.hpRatio = Math.min(1.0, (ps.hpRatio || 0) + (def.ratio || 0.5));
+      ps.healJustApplied = true; // glow flag
       return true;
     }
     if (def.kind === "heal_full_cure") {
-      if ((ps.hpRatio || 0) <= 0) return false;
+      if ((ps.hpRatio || 0) <= 0) return false;               // fainted — use revive
+      if ((ps.hpRatio || 0) >= 1 && !ps.status) return false; // nothing to fix
       ps.hpRatio = 1.0;
       ps.status = null;
+      ps.healJustApplied = true; // glow flag
       return true;
     }
     if (def.kind === "revive") {
       if ((ps.hpRatio || 0) > 0) return false;
       ps.hpRatio = Math.max(0, Math.min(1, def.ratio || 0.5));
       ps.status = null;
+      ps.healJustApplied = true; // glow flag
       return true;
     }
     // Held items: not usable from the bag — must be equipped via the
@@ -7954,6 +8022,57 @@
     };
   }
 
+  // Pyramid held-item level override: items equipped via the Combat
+  // Bag should ALWAYS hit their max-level effect regardless of how
+  // many copies the player has farmed in their main inventory.
+  // Pokechill's `returnItemLevel(id)` scales from 1 to 5 based on
+  // `item[id].got` — which is fine for the overworld but would make
+  // a Pyramid-equipped Leftovers / Quick Claw / etc. feel weaker than
+  // intended if the player only has a single copy. Wrap the function
+  // so any id currently on a pikeTeam[slot].item inside an active
+  // Pyramid run resolves to level 5 (stars / "max level" label / 5).
+  function installPyramidItemMaxLevel() {
+    if (typeof window.returnItemLevel !== "function") {
+      setTimeout(installPyramidItemMaxLevel, 200);
+      return;
+    }
+    if (window.__frontierExtItemLevelHooked) return;
+    window.__frontierExtItemLevelHooked = true;
+    const orig = window.returnItemLevel;
+    const isPyramidEquipped = (id) => {
+      try {
+        const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
+        if (!run || !run.pikeTeam) return false;
+        const fac = FACILITIES.find((f) => f.id === run.facilityId);
+        if (!fac || !isPyramidFacility(fac)) return false;
+        for (const sl of ["slot1", "slot2", "slot3"]) {
+          if (run.pikeTeam[sl] && run.pikeTeam[sl].item === id) return true;
+        }
+      } catch (e) { /* ignore */ }
+      return false;
+    };
+    window.returnItemLevel = function (id, mod) {
+      if (isPyramidEquipped(id)) {
+        if (mod === "stars") return `<span style="color:#4fffa7ff">✦✦✦✦✦</span>`;
+        if (mod === "left")  return "(max level reached)";
+        return 5;
+      }
+      // Defensive fall-through: the custom Pyramid-only ids (berries,
+      // potions, revives…) don't live in `item[]`. Vanilla's body
+      // (explore.js:2079) reads `item[id].got` and would throw on
+      // those. If the id isn't in the vanilla registry just return
+      // level 1 instead of delegating — none of those IDs should ever
+      // reach returnItemLevel outside a Pyramid run (they only exist
+      // inside the run's combatBag), but this guards the edge case.
+      if (typeof item === "undefined" || !item[id]) {
+        if (mod === "stars") return `<span style="color:#4fffa7ff">✦</span>✦✦✦✦`;
+        if (mod === "left")  return "(level 1)";
+        return 1;
+      }
+      return orig.apply(this, arguments);
+    };
+  }
+
   // ─── 6b3. PIKE RULE — 14 rooms, 3 doors, HP/status persist ───────────────
   // Signature Gen 3 Emerald Battle Pike rules:
   //   • Each round = 14 rooms.
@@ -8231,8 +8350,17 @@
       const statusPill = status
         ? `<span class="st ${status}">${statusLabel[status] || status}</span>`
         : "";
+      // Heal-just-applied glow. Flag is set by every heal path (nurse
+      // heal_full, heal_partial, Pyramid bag heals, tough-combat
+      // post-win heal). Consumed on first render so the animation
+      // doesn't replay on subsequent HP summary refreshes. Shows on
+      // ALL slots that were healed — including already-full ones
+      // (addresses "heal-on-full looks like a bug" UX note) AND
+      // partial heals that didn't reach 100%.
+      const healFlash = ps.healJustApplied ? " heal-full-flash" : "";
+      if (ps.healJustApplied) ps.healJustApplied = false;
       cells.push(`
-        <span class="frontier-ext-pike-hp-pill ${cls}">
+        <span class="frontier-ext-pike-hp-pill ${cls}${healFlash}">
           ${monName}: ${pct}%
           <span class="bar"><span style="width:${barWidth}%"></span></span>
           ${statusPill}
@@ -8286,15 +8414,19 @@
           sleep: l.statusSleep, freeze: l.statusFreeze })[s] || s;
         const speciesName = (id) => (typeof format === "function" ? format(id) : id);
         let m = null;
+        let mOpts = undefined;
         if (d.type === "heal_full")    m = ["heal", l.healFullTitle, l.healFullBody, "full"];
         else if (d.type === "heal_partial") m = ["heal", l.healPartialTitle, l.healPartialBody(d.data.count || 1), "partial"];
-        else if (d.type === "status_species") m = ["trap", l.statusTitle, l.statusBody(speciesName(d.data.species), statusName(d.data.status), d.data.count || 1), d.data.status];
+        else if (d.type === "status_species") {
+          m = ["trap", l.statusTitle, l.statusBody(speciesName(d.data.species), statusName(d.data.status), d.data.count || 1), d.data.status];
+          mOpts = { spriteId: d.data.species };
+        }
         else if (d.type === "empty")   m = ["heal", l.emptyTitle, l.emptyBody, "empty"];
         // Legacy fallbacks for in-progress saves:
         else if (d.type === "heal_half") m = ["heal", l.healPartialTitle, l.healPartialBody(2), "partial"];
         else if (d.type === "trap")      m = ["trap", l.statusTitle, `${l.statusTitle} (${statusName(d.data.status)})`, d.data.status];
         if (m) {
-          showPikeEventModal(facility, m[0], m[1], m[2], m[3]);
+          showPikeEventModal(facility, m[0], m[1], m[2], m[3], mOpts);
           return;
         }
       }
@@ -8503,6 +8635,7 @@
           facility, "trap", l.statusTitle,
           l.statusBody(speciesName(door.data.species), statusName(door.data.status), door.data.count || 1),
           door.data.status,
+          { spriteId: door.data.species },
         );
         return;
       }
@@ -8557,6 +8690,7 @@
       const ps = run.pikeTeam[sl];
       ps.hpRatio = 1.0;
       ps.status = null;
+      ps.healJustApplied = true; // glow flag, read by HP summary renderers
     }
   }
 
@@ -8601,6 +8735,11 @@
       const cur = (typeof ps.hpRatio === "number") ? ps.hpRatio : 1.0;
       ps.hpRatio = Math.min(1.0, cur + ratio);
       if (ratio >= 1.0) ps.status = null;
+      // Flag EVERY touched slot for the next render — renderPikeHpSummary
+      // uses this to play a short glow on slots sitting at 100% HP after
+      // a heal door fires. Prevents the "the door healed a full-HP mon?
+      // is that a bug?" UX gotcha. Flag is cleared on room advance.
+      ps.healJustApplied = true;
     }
   }
 
@@ -8617,16 +8756,28 @@
   }
 
   // Heal/trap confirmation modal. User clicks "Next room" to advance.
-  function showPikeEventModal(facility, kind, title, body, variant) {
+  function showPikeEventModal(facility, kind, title, body, variant, opts) {
     const lang = "en";
     const l = pikeL10n();
     const top = document.getElementById("tooltipTop");
     const titleEl = document.getElementById("tooltipTitle");
     const mid = document.getElementById("tooltipMid");
     const bottom = document.getElementById("tooltipBottom");
-    const icon = kind === "heal"
-      ? (variant === "full" ? "💚" : variant === "empty" ? "🍃" : "🌿")
-      : "☠️";
+    // Hostile-Pokémon events pass a species id via opts.spriteId so the
+    // modal can render the actual sprite (much clearer than the generic
+    // ☠️ emoji — the player immediately recognises Gloom / Kirlia /
+    // Dusclops / …). Fall back to the emoji icon if no sprite id was
+    // supplied OR the sprite asset doesn't exist.
+    const spriteId = opts && opts.spriteId;
+    let iconHtml;
+    if (spriteId) {
+      iconHtml = `<img class="frontier-ext-pike-hostile-sprite" src="img/pkmn/sprite/${spriteId}.png" alt="${spriteId}" onerror="this.style.display='none'">`;
+    } else {
+      const emoji = kind === "heal"
+        ? (variant === "full" ? "💚" : variant === "empty" ? "🍃" : "🌿")
+        : "☠️";
+      iconHtml = emoji;
+    }
     const facName = facility.name;
 
     // PIKE-ONLY. The Pyramid used to share this modal for heal/cure
@@ -8648,7 +8799,7 @@
       mid.style.display = "block";
       mid.innerHTML = `
         <div class="frontier-ext-pike-event ${kind}">
-          <div class="icon">${icon}</div>
+          <div class="icon">${iconHtml}</div>
           <div class="headline">${title}</div>
           <div class="body">${body}</div>
         </div>
@@ -9935,6 +10086,7 @@
           if (run.pikeTeam[sl]) {
             run.pikeTeam[sl].hpRatio = 1.0;
             run.pikeTeam[sl].status = null;
+            run.pikeTeam[sl].healJustApplied = true; // glow flag
           }
         }
       }
@@ -10453,9 +10605,6 @@
         const vsListing = document.getElementById("vs-listing");
         if (frontierListing) frontierListing.style.display = "";
         if (vsListing) vsListing.style.display = "none";
-        if (false) {
-          requestAnimationFrame(translateDOM);
-        }
       } catch (e) {
         console.error("[frontier-ext] updateFrontier hook failed:", e);
       }
@@ -10555,9 +10704,6 @@
         for (const facility of FACILITIES) {
           hoennListing.appendChild(buildTile(facility));
         }
-        if (false) {
-          requestAnimationFrame(translateDOM);
-        }
       } catch (e) {
         console.error("[frontier-ext] updateHoennBF failed:", e);
       }
@@ -10595,6 +10741,7 @@
     installDomeTeamFilter();
     installPikePyramidHpRestoreHook();
     installPyramidEquipSync();
+    installPyramidItemMaxLevel();
     installPyramidStatusStickHook();
     installRunLockTooltipHook();
     installMenuLockDuringRun();
@@ -10622,6 +10769,18 @@
         if (!saved || !saved.frontierExt) return false;
         const run = saved.frontierExt.activeRun;
         if (!run) return true;
+        // Strip the transient `healJustApplied` glow flag off every
+        // surviving team slot. The flag is meant to drive a one-shot
+        // animation on the NEXT render after a heal — it serializes
+        // into the save like everything else on run.pikeTeam, so
+        // without this scrub an F5 mid-run would replay a phantom
+        // glow on the first HP summary render of the reloaded
+        // session. Cosmetic only, but wrong.
+        if (run.pikeTeam) {
+          for (const sl of ["slot1", "slot2", "slot3"]) {
+            if (run.pikeTeam[sl]) run.pikeTeam[sl].healJustApplied = false;
+          }
+        }
         // If the active run is flagged `roundJustCleared` at boot, the
         // player had won a round and the auto-save captured them
         // between the Round-Cleared modal and any Rest/Continue click.
