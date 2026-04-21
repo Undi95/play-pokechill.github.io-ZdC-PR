@@ -1576,6 +1576,25 @@
   function injectStyles() {
     if (document.getElementById("frontier-ext-css")) return;
     const css = `
+      /* Mirror the vanilla #frontier-listing / #vs-listing layout so the
+         Hoenn listing row widths match the Trainers + Battle Frontier
+         tabs. Without this, the Hoenn tiles rendered at their
+         intrinsic size and overflowed the viewport on narrow mobile
+         screens (reports: text clipped on the left, tiles extending
+         past the right edge). styles.css:2759 drives the vanilla
+         containers. */
+      #frontier-hoenn-listing {
+        height: auto;
+        margin-top: 0;
+        width: 95%;
+        padding: 0rem;
+        display: flex;
+        justify-content: start;
+        align-items: center;
+        flex-direction: column;
+        gap: 0.3rem;
+        position: relative;
+      }
       /* Whole-tile hue rotation gives each facility its own colour identity. */
       .frontier-ext-tile {
         position: relative;
@@ -1692,6 +1711,23 @@
         }
       }
       .frontier-ext-tile.locked .frontier-ext-heat-tag { display: none; }
+      /* Stack the heat + run-state pills vertically so narrow-screen
+         tiles don't push the brain sprite off the right edge. Heat on
+         top, PAUSED / IN PROGRESS below. Reads as one block both on
+         PC and mobile. */
+      .frontier-ext-state-pills {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
+        vertical-align: middle;
+        margin-left: 0.2rem;
+      }
+      .frontier-ext-state-pills .frontier-ext-inprogress-tag,
+      .frontier-ext-state-pills .frontier-ext-paused-tag,
+      .frontier-ext-state-pills .frontier-ext-heat-tag {
+        margin-left: 0;
+      }
       .frontier-ext-streak {
         background: #4a4a6a;
         color: white;
@@ -1699,6 +1735,10 @@
         border-radius: 0.2rem;
         font-size: 0.85rem;
         margin-right: 0.2rem;
+        display: inline-block;
+        line-height: 1.15;
+        text-align: center;
+        vertical-align: middle;
       }
       /* Medals: the tile wrapper applies filter:hue-rotate(var(--hue)) to
          tint the whole facility card. Silver/gold metallic gradients need
@@ -3275,11 +3315,13 @@
             ${name}
           </span>
           <span>
-            <strong class="frontier-ext-streak">${streakLabel}: ${streak} / ${maxLabel}: ${maxStreak}</strong>
+            <strong class="frontier-ext-streak">${streakLabel}: ${streak}<br>${maxLabel}: ${maxStreak}</strong>
             <span class="frontier-ext-symbol ${silverClass}" title="${`Silver Symbol (round ${silverRoundFor(facility)})`}">●</span>
             <span class="frontier-ext-symbol ${goldClass}" title="${`Gold Symbol (round ${goldRoundFor(facility)})`}">●</span>
-            ${inProgressTag}
-            ${heatTag}
+            <span class="frontier-ext-state-pills">
+              ${heatTag}
+              ${inProgressTag}
+            </span>
           </span>
         </span>
       </div>
@@ -5358,16 +5400,30 @@
     // if a #prevent-tooltip-exit element exists in the DOM, so we plant
     // an invisible marker whenever a run is active. Handles both the
     // backdrop-click and Escape-key exits.
+    //
+    // CRITICAL: Pokechill itself reuses `id="prevent-tooltip-exit"` on
+    // legitimate interactive elements (e.g. the "Yeah!" wipe-data
+    // confirmation button in index.html line 528). We mark OUR blocker
+    // with a `data-frontier-ext-blocker` attribute and only remove the
+    // marked copy — otherwise apply() on a content swap would wipe
+    // Pokechill's button and leave the player staring at an empty bar.
+    const BLOCKER_MARKER = "data-frontier-ext-blocker";
     const ensureBlocker = () => {
-      if (document.getElementById("prevent-tooltip-exit")) return;
+      // If a vanilla blocker already exists (non-ours), don't duplicate.
+      const existing = document.getElementById("prevent-tooltip-exit");
+      if (existing && !existing.hasAttribute(BLOCKER_MARKER)) return;
+      if (existing) return;
       const el = document.createElement("div");
       el.id = "prevent-tooltip-exit";
+      el.setAttribute(BLOCKER_MARKER, "1");
       el.style.display = "none";
       document.body.appendChild(el);
     };
     const removeBlocker = () => {
       const el = document.getElementById("prevent-tooltip-exit");
-      if (el) try { el.remove(); } catch (e) {}
+      if (el && el.hasAttribute(BLOCKER_MARKER)) {
+        try { el.remove(); } catch (e) {}
+      }
     };
     // Detect whether the current tooltip belongs to our overlay. Any
     // ZdC-rendered modal injects at least one element whose class name
@@ -5400,6 +5456,28 @@
       } catch (e) { /* ignore */ }
     };
     window.openTooltip = function () {
+      // Belt-and-braces suppression of the vanilla "Defeat Team Leader
+      // Giovanni in VS mode to unlock" banner. Vanilla writes the
+      // sentence into #tooltipMid from two spots (explore.js:4518 in
+      // setEventAreas, :7292 in updateFrontier), both right before
+      // openTooltip. Without this guard, pre-Giovanni players saw
+      // the popup on every F5 / auto-restore — overlapping the
+      // starter-select + tutorial on fresh saves. If Giovanni isn't
+      // beaten AND tooltipMid matches the banner text, clear mid and
+      // cancel the open before anything paints.
+      try {
+        const giovanniDone = !!(typeof areas !== "undefined"
+          && areas.vsTeamLeaderGiovanni
+          && areas.vsTeamLeaderGiovanni.defeated);
+        if (!giovanniDone) {
+          const mid = document.getElementById("tooltipMid");
+          const text = mid ? (mid.textContent || "").trim() : "";
+          if (/Defeat Team Leader Giovanni in VS mode to unlock/i.test(text)) {
+            if (mid) mid.innerHTML = "";
+            return;
+          }
+        }
+      } catch (e) { /* fall through to open */ }
       const res = origOpen.apply(this, arguments);
       apply();
       return res;
@@ -5414,6 +5492,81 @@
       } catch (e) { /* ignore */ }
       return origClose.apply(this, arguments);
     };
+  }
+
+  // ─── MENU LOCK DURING ACTIVE RUN ─────────────────────────────────────────
+  // While a ZdC run is in progress, every non-VS action in the overworld
+  // menu is a save-integrity hazard: Items would let the player bag-swap
+  // mid-run; Team/Dex/Genetics could shuffle species; Mystery Gift /
+  // Export Reward / Wonder Trade touch external state we can't roll back.
+  // The only legitimate exit is through VS → Hoenn → facility tile →
+  // Continue / Rest / Abandon, so we gate the menu to VS only.
+  //
+  // Defense in depth:
+  //   1. Hook `switchMenu`: refuse any id !== "vs" when activeRun exists.
+  //   2. Hook the three claim* functions that bypass switchMenu entirely.
+  //   3. Visual: mirror vanilla explore.js's `style.filter =
+  //      "brightness(0.6)"` on every non-VS menu tile so the player
+  //      sees the same grey-out they already know means "not now".
+  //      Clicks are blocked by #1/#2 above — the filter is cosmetic.
+  //   4. MutationObserver (childList only) on #menu-items keeps the
+  //      filter synced if the menu re-renders mid-run.
+  function installMenuLockDuringRun() {
+    const hasRun = () => !!(saved && saved.frontierExt && saved.frontierExt.activeRun);
+
+    // Match vanilla's gray-out mechanism (scripts/explore.js uses
+    // el.style.filter = "brightness(0.6)" to dim menus while in an
+    // area). Inline styles survive className replacements the vanilla
+    // game occasionally does on #menu-items tiles. The JS-level wraps
+    // on switchMenu + claim* are the real enforcement; the filter is
+    // just the visual cue.
+    const syncMenuLockCss = () => {
+      try {
+        const menu = document.getElementById("menu-items");
+        if (!menu) return;
+        const locked = hasRun();
+        for (const el of menu.querySelectorAll(".menu-item")) {
+          // Keep VS unlocked so the player can reach the Hoenn sub-tab
+          // where Continue / Rest / Abandon live.
+          const isVs = el.id === "menu-item-vs";
+          const shouldDim = locked && !isVs;
+          const target = shouldDim ? "brightness(0.6)" : "";
+          if (el.style.filter !== target) el.style.filter = target;
+        }
+      } catch (e) { /* ignore */ }
+    };
+    window.__frontierExtSyncMenuLock = syncMenuLockCss;
+
+    if (typeof window.switchMenu === "function" && !window.__frontierExtSwitchMenuHooked) {
+      window.__frontierExtSwitchMenuHooked = true;
+      const orig = window.switchMenu;
+      window.switchMenu = function (id) {
+        if (hasRun() && id !== "vs") return;
+        return orig.apply(this, arguments);
+      };
+    }
+    for (const name of ["claimMysteryGift", "claimExportReward", "claimWonderTrade"]) {
+      if (typeof window[name] === "function" && !window["__frontierExtHooked_" + name]) {
+        window["__frontierExtHooked_" + name] = true;
+        const orig = window[name];
+        window[name] = function () {
+          if (hasRun()) return;
+          return orig.apply(this, arguments);
+        };
+      }
+    }
+    syncMenuLockCss();
+    try {
+      const menu = document.getElementById("menu-items");
+      if (menu && typeof MutationObserver === "function") {
+        // childList only — NOT attributes. Watching attribute
+        // mutations while the callback writes `el.style.filter`
+        // creates an infinite feedback loop (style change → observer
+        // fires → writes style → fires again) that freezes the page.
+        const mo = new MutationObserver(syncMenuLockCss);
+        mo.observe(menu, { childList: true, subtree: true });
+      }
+    } catch (e) { /* ignore */ }
   }
 
   // Pyramid status-persistence hook. Wild encounters bias their slot-1
@@ -10218,6 +10371,13 @@
   // rest, etc.) — routes to the Hoenn tab if the active run is in one
   // of our facilities, otherwise falls back to the vanilla frontier tab.
   function refreshActiveFrontierView() {
+    // Keep the main-menu lock CSS in sync with run state. Cheap no-op
+    // when no menu is mounted or installer hasn't run yet.
+    try {
+      if (typeof window.__frontierExtSyncMenuLock === "function") {
+        window.__frontierExtSyncMenuLock();
+      }
+    } catch (e) { /* ignore */ }
     const fe = saved && saved.frontierExt;
     const activeRun = fe && fe.activeRun;
     const pausedIds = fe && fe.pausedRuns ? Object.keys(fe.pausedRuns) : [];
@@ -10452,6 +10612,7 @@
     installPyramidEquipSync();
     installPyramidStatusStickHook();
     installRunLockTooltipHook();
+    installMenuLockDuringRun();
     installTeamMenuLockHook();
     installTeamMenuObserver();
     installTeamLockEventFilter();
