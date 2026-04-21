@@ -6958,7 +6958,8 @@
       if (!ps || !ps.pkmnId) continue;
       const ratio = (typeof ps.hpRatio === "number") ? ps.hpRatio : 1.0;
       const status = ps.status ? normalizePikePyramidStatus(ps.status) : null;
-      const pct = Math.round(ratio * 100);
+      // Display: floor at 1% for live mons so "0%" only ever means KO.
+      const pct = ratio > 0 ? Math.max(1, Math.round(ratio * 100)) : 0;
       const barWidth = Math.max(0, Math.min(100, pct));
       const cls = ratio <= 0 ? "low" : (ratio <= 0.25 ? "low" : (ratio <= 0.5 ? "mid" : ""));
       const monName = typeof format === "function" ? format(ps.pkmnId) : ps.pkmnId;
@@ -7836,14 +7837,19 @@
         const ps = run.pikeTeam[sl];
         if (!ps || !ps.pkmnId) return "";
         const monName = typeof format === "function" ? format(ps.pkmnId) : ps.pkmnId;
-        const pct = Math.round((ps.hpRatio || 0) * 100);
+        // Floor display at 1% for live mons so "0%" is reserved for
+        // genuine KOs — otherwise a 1 HP / 250 max mon shows "0%"
+        // and the player thinks Revive should apply (it can't: Gen 3
+        // Revive is fainted-only, which our isValidFor mirrors).
+        const rawRatio = ps.hpRatio || 0;
+        const pct = rawRatio > 0 ? Math.max(1, Math.round(rawRatio * 100)) : 0;
         const statusPill = ps.status ? `<span class="status">${statusLabel[ps.status] || ps.status}</span>` : "";
         const valid = isValidFor(sl);
         return `
           <button class="frontier-ext-pyr-target-card ${valid ? "" : "invalid"}"
                   data-pyr-use-target="${sl}" ${valid ? "" : "disabled"}>
             <div class="name">${monName}</div>
-            <div class="hp">${(ps.hpRatio || 0) <= 0 ? "K.O." : `${pct}%`}</div>
+            <div class="hp">${rawRatio <= 0 ? "K.O." : `${pct}%`}</div>
             ${statusPill}
             ${valid ? "" : `<div class="invalid-label">(${t.invalid})</div>`}
           </button>`;
@@ -8343,7 +8349,8 @@
       if (!ps || !ps.pkmnId) continue;
       const ratio = (typeof ps.hpRatio === "number") ? ps.hpRatio : 1.0;
       const status = ps.status ? normalizePikePyramidStatus(ps.status) : null;
-      const pct = Math.round(ratio * 100);
+      // Display: floor at 1% for live mons so "0%" only ever means KO.
+      const pct = ratio > 0 ? Math.max(1, Math.round(ratio * 100)) : 0;
       const barWidth = Math.max(0, Math.min(100, pct));
       const cls = ratio <= 0.25 ? "low" : (ratio <= 0.5 ? "mid" : "");
       const monName = typeof format === "function" ? format(ps.pkmnId) : ps.pkmnId;
@@ -8361,7 +8368,7 @@
       if (ps.healJustApplied) ps.healJustApplied = false;
       cells.push(`
         <span class="frontier-ext-pike-hp-pill ${cls}${healFlash}">
-          ${monName}: ${pct}%
+          ${monName}: ${ratio <= 0 ? "KO" : `${pct}%`}
           <span class="bar"><span style="width:${barWidth}%"></span></span>
           ${statusPill}
         </span>
