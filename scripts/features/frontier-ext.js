@@ -7280,6 +7280,33 @@
     if (typeof move === "undefined") return;
     const p = pkmn[speciesId];
     const types = (Array.isArray(p.type) ? p.type : [p.type]).filter(Boolean);
+
+    // Weather theme: inject a weather-setter in slot 1, bypassing the
+    // type-based canLearn gate. Pokechill's 4 weather moves have strict
+    // moveset gates (sunnyDay=[fire,ground], rainDance=[water],
+    // sandstorm=[rock,ground], hail=[ice]), which would exclude half
+    // the weather theme pool (tropius Grass/Flying, cacturne Grass/Dark).
+    // The theme's promise is that EVERY encounter sets weather — so we
+    // skip the gate and pick by STAB synergy, mirroring the player-side
+    // weather-setter logic at line 1480+ (weatherBucket from stabs).
+    // Combat engine only cares move[id] exists + has hitEffect, so a
+    // "type-illegal" learn runs fine at runtime.
+    if (themeKey === "weather") {
+      const typeSet = new Set(types);
+      let weatherMove = "rainDance"; // neutral fallback
+      if (typeSet.has("fire") || typeSet.has("grass"))              weatherMove = "sunnyDay";
+      else if (typeSet.has("ice"))                                   weatherMove = "hail";
+      else if (typeSet.has("rock") || typeSet.has("ground") || typeSet.has("steel")) weatherMove = "sandstorm";
+      else if (typeSet.has("water") || typeSet.has("flying"))        weatherMove = "rainDance";
+      // Skip if the rolled moveset already carries the chosen weather.
+      if (moveset.includes(weatherMove)) return;
+      // Last-line guard: the move def must exist. If (hypothetically)
+      // the moveDictionary drops one of these in the future, just bail.
+      if (!move[weatherMove]) return;
+      moveset[0] = weatherMove;
+      return;
+    }
+
     const canLearn = (mvKey) => {
       const def = move[mvKey];
       if (!def || !Array.isArray(def.moveset)) return false;
