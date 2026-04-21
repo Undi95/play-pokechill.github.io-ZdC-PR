@@ -5456,28 +5456,6 @@
       } catch (e) { /* ignore */ }
     };
     window.openTooltip = function () {
-      // Belt-and-braces suppression of the vanilla "Defeat Team Leader
-      // Giovanni in VS mode to unlock" banner. Vanilla writes the
-      // sentence into #tooltipMid from two spots (explore.js:4518 in
-      // setEventAreas, :7292 in updateFrontier), both right before
-      // openTooltip. Without this guard, pre-Giovanni players saw
-      // the popup on every F5 / auto-restore — overlapping the
-      // starter-select + tutorial on fresh saves. If Giovanni isn't
-      // beaten AND tooltipMid matches the banner text, clear mid and
-      // cancel the open before anything paints.
-      try {
-        const giovanniDone = !!(typeof areas !== "undefined"
-          && areas.vsTeamLeaderGiovanni
-          && areas.vsTeamLeaderGiovanni.defeated);
-        if (!giovanniDone) {
-          const mid = document.getElementById("tooltipMid");
-          const text = mid ? (mid.textContent || "").trim() : "";
-          if (/Defeat Team Leader Giovanni in VS mode to unlock/i.test(text)) {
-            if (mid) mid.innerHTML = "";
-            return;
-          }
-        }
-      } catch (e) { /* fall through to open */ }
       const res = origOpen.apply(this, arguments);
       apply();
       return res;
@@ -10392,9 +10370,16 @@
     const onHoennTab = !!(hoennListing && getComputedStyle(hoennListing).display !== "none");
     if ((isHoennActive || hasHoennPaused || onHoennTab) && typeof window.updateHoennBF === "function") {
       window.updateHoennBF();
-    } else if (typeof updateFrontier === "function") {
-      updateFrontier();
     }
+    // No vanilla-updateFrontier fallback here. Previously this branch
+    // fired updateFrontier() on every boot via installLoadGameIntegrityHook,
+    // which for pre-Giovanni saves triggered the vanilla "Defeat Team
+    // Leader Giovanni in VS mode to unlock" popup on every F5. The
+    // call was unnecessary — vanilla's own boot path at explore.js:866
+    // already handles the case where saved.currentArea is Frontier-typed,
+    // and there's no reason for the ZdC overlay to force a Frontier
+    // refresh when the player has no Hoenn context. Silent no-op when
+    // nothing ZdC-related is active.
   }
 
   // ─── FACTORY RESTRICTED-MOVES BYPASS ──────────────────────────────────────
