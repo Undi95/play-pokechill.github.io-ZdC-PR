@@ -10673,6 +10673,21 @@
         if (frontierListing) { frontierListing.innerHTML = ""; frontierListing.style.display = "none"; }
         hoennListing.style.display = "";
 
+        // Oak gate — 1:1 with how vanilla Pokechill handles the
+        // Giovanni gate on Battle Frontier: if the player hasn't
+        // beaten the unlock trainer yet, don't render the facility
+        // listing at all. Hide it + pop a tooltip with the unlock
+        // message. Player sees a clean "come back after Oak" screen
+        // instead of a list of locked padlock tiles.
+        if (!isUnlocked()) {
+          hoennListing.innerHTML = "";
+          hoennListing.style.display = "none";
+          const hdr = document.getElementById("vs-menu-header");
+          if (hdr) hdr.innerHTML = "";
+          try { showLockedTooltip(); } catch (e) { /* ignore */ }
+          return;
+        }
+
         // Header — match the existing VS Frontier header shape (text only
         // is fine; vanilla updateFrontier uses a much bigger header with
         // a rotation timer, but our section has no rotations).
