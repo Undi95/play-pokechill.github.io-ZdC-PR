@@ -6264,12 +6264,18 @@
     // All dispatched via applyItemBstInflation (pre-combat BST bumps).
     // The strict "only pick what we dispatch" rule still applies.
     tintedLens:    (moves) => {
-      // "Resisted becomes neutral." Conservative universal bump since
-      // we don't know the player's types. Requires ≥2 attacking moves
-      // so a pure status mon doesn't snap it up.
-      let atkMoves = 0;
-      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) atkMoves++;
-      return atkMoves >= 2 ? 6 : 0;
+      // "Resisted becomes neutral." Universal eligibility (no type gate
+      // on the ability itself), so we keep the score LOW to avoid
+      // monopolising every enemy slot in the argmax/weighted pick —
+      // see the "coloforce" audit bug. Gated on a genuinely mixed
+      // moveset (3+ distinct offensive types) so mono-type attackers
+      // don't get a fake "resist breaker" pill.
+      const typeSet = new Set();
+      for (const m of moves) {
+        if (!m || !move[m]) continue;
+        if ((move[m].power || 0) > 0 && move[m].type) typeSet.add(move[m].type);
+      }
+      return typeSet.size >= 3 ? 3 : 0;
     },
     megaLauncher:  (moves) => {
       // Pulse-tagged moves (Pokechill's Mega Launcher family — water
@@ -6617,9 +6623,23 @@
       }
       push(id);
     }
+    // Phase B+ diversity fix: weighted-random pick from the top 6 scoring
+    // candidates instead of pure argmax. Argmax was collapsing every
+    // "universally eligible" species onto the same highest-scoring flat
+    // ability (tintedLens / stamina / speedBoost / etc.) — the audit
+    // name was "coloforce everywhere". Weighted random keeps the best
+    // candidate favoured while still giving lower-score picks real
+    // airtime, and because weights are proportional to score the pick
+    // still meaningfully respects the scorer's intent.
     candidates.sort((a, b) => b.score - a.score);
     let normalPick = null;
-    if (candidates.length && candidates[0].score > 0) normalPick = candidates[0].id;
+    const topPool = candidates.filter((c) => c.score > 0).slice(0, 6);
+    if (topPool.length) {
+      const totalW = topPool.reduce((s, c) => s + c.score, 0);
+      let r = Math.random() * totalW;
+      for (const c of topPool) { r -= c.score; if (r <= 0) { normalPick = c.id; break; } }
+      if (!normalPick) normalPick = topPool[0].id;
+    }
     // NO fallback to species default here — if nothing in the active table
     // scores > 0 for this species, the clone ends the fight without an
     // ability pill on the info row. That's intentional ("dommage mais c'est
@@ -6644,12 +6664,20 @@
       // NOT consulted — the tier gate is authoritative per user rule.
     }
 
-    // Edge case: normalPick landed on the same id the hidden slot wants. Push
-    // the normal one to the next best active candidate so the clone truly has
-    // 2 DIFFERENT abilities firing.
+    // Edge case: normalPick landed on the same id the hidden slot wants. Re-
+    // roll the weighted pick over the non-hidden candidates so the clone
+    // truly has 2 DIFFERENT abilities firing (same diversity principle).
     if (hiddenPick && normalPick === hiddenPick) {
-      const alt = candidates.find((c) => c.id !== hiddenPick && c.score > 0);
-      normalPick = alt ? alt.id : null; // defaultId fallback skipped — must be different + active
+      const altPool = topPool.filter((c) => c.id !== hiddenPick);
+      if (altPool.length) {
+        const tW = altPool.reduce((s, c) => s + c.score, 0);
+        let r2 = Math.random() * tW;
+        normalPick = null;
+        for (const c of altPool) { r2 -= c.score; if (r2 <= 0) { normalPick = c.id; break; } }
+        if (!normalPick) normalPick = altPool[0].id;
+      } else {
+        normalPick = null; // defaultId fallback skipped — must be different + active
+      }
     }
 
     return { normal: normalPick, hidden: hiddenPick };
