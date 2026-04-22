@@ -6107,6 +6107,15 @@
     "toxicOrb", "weaknessPolicy", "loadedDice", "assaultVest", "eviolite",
     "lightClay", "mentalHerb", "quickClaw", "metronome", "powerHerb",
     "luckyPunch", "laggingTail", "heavyDutyBoots", "clearAmulet",
+    // Phase B — weather/terrain duration extenders. Paired probabilistically
+    // with their matching switch-in ability (drought+heatRock, drizzle+damp-
+    // Rock, …) — see pickItemForClone synergy block. Enemies not on a
+    // weather-setter body can still roll these, they just don't trigger
+    // anything (Pokechill's changeWeather only bumps duration if
+    // team[active] is the holder — we special-case the enemy side via our
+    // __fireAbilityOnSwitchIn wrap).
+    "heatRock", "dampRock", "smoothRock", "icyRock",
+    "foggySeed", "electricSeed", "grassySeed", "mistySeed",
     // ejectPack / ejectButton excluded — their effect ends with "switch to
     // the previous/next team member" once all moves are executed. Enemies in
     // ZdC fight solo (no bench), so the switch is a no-op at best and a
@@ -6150,15 +6159,21 @@
 
     // Switch-in dispatchers.
     intimidate:    () => 5,                                            // -atk on player switch-in
-    dauntingLook:  () => 5,                                            // -satk on player switch-in (new)
-    drought:       (moves) => __anyMoveOfType(moves, "fire")     ? 10 : 0,
-    drizzle:       (moves) => __anyMoveOfType(moves, "water")    ? 10 : 0,
-    sandStream:    (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 8 : 0,
-    snowWarning:   (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 8 : 0,
-    somberField:   () => 4,                                            // foggy weather setter
-    electricSurge: (moves) => __anyMoveOfType(moves, "electric") ? 6 : 0,
-    grassySurge:   (moves) => __anyMoveOfType(moves, "grass")    ? 6 : 0,
-    mistySurge:    (moves) => __anyMoveOfType(moves, "fairy")    ? 6 : 0,
+    dauntingLook:  () => 5,                                            // -satk on player switch-in (Phase 1)
+    // Weather / terrain setters — scores lowered in Phase B. The original
+    // Phase 1 scores (drought/drizzle = 10) made these dominate any mon
+    // with matching STAB, which led to long chains of back-to-back
+    // weather-setters in a single run (redundant + boring, since the
+    // successor enemy rarely benefits from the same weather). Halved to
+    // keep them in rotation without saturating.
+    drought:       (moves) => __anyMoveOfType(moves, "fire")     ? 6 : 0,
+    drizzle:       (moves) => __anyMoveOfType(moves, "water")    ? 6 : 0,
+    sandStream:    (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 5 : 0,
+    snowWarning:   (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 5 : 0,
+    somberField:   () => 3,                                            // foggy weather setter
+    electricSurge: (moves) => __anyMoveOfType(moves, "electric") ? 4 : 0,
+    grassySurge:   (moves) => __anyMoveOfType(moves, "grass")    ? 4 : 0,
+    mistySurge:    (moves) => __anyMoveOfType(moves, "fairy")    ? 4 : 0,
 
     // End-turn / weather heal.
     speedBoost:    () => 7,
@@ -6242,6 +6257,105 @@
     hydratation:   (moves, p) => (p.type||[]).some((t)=>t==="water") ? 5 : 0,
     sandVeil:      (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 4 : 0,
     snowCloak:     (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 4 : 0,
+
+    // ═════════════════════════════════════════════════════════════════
+    // PHASE B — additional damage-calc / speed / HP abilities.
+    // ═════════════════════════════════════════════════════════════════
+    // All dispatched via applyItemBstInflation (pre-combat BST bumps).
+    // The strict "only pick what we dispatch" rule still applies.
+    tintedLens:    (moves) => {
+      // "Resisted becomes neutral." Conservative universal bump since
+      // we don't know the player's types. Requires ≥2 attacking moves
+      // so a pure status mon doesn't snap it up.
+      let atkMoves = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) atkMoves++;
+      return atkMoves >= 2 ? 6 : 0;
+    },
+    megaLauncher:  (moves) => {
+      // Pulse-tagged moves (Pokechill's Mega Launcher family — water
+      // pulse / dragon pulse / origin pulse / etc.). Name regex is a
+      // reasonable proxy — the canonical pool list is
+      // `movesAffectedByMegaLauncher`. We bump when any pulse move is
+      // in the clone's moveset.
+      for (const m of moves) if (m && /pulse|auraSphere/i.test(m)) return 9;
+      return 0;
+    },
+    metalhead:     (moves) => {
+      // "Head" moves (ironHead, headButt, headSmash, zenHeadbutt, etc.).
+      // Similar name regex proxy.
+      for (const m of moves) if (m && /head|butt/i.test(m)) return 8;
+      return 0;
+    },
+    // Speed-up families — Pokechill's "X-related moves are 1.5× faster"
+    // family. We bump bst.spe conservatively since the effect is per-
+    // move use, not a stat change.
+    prankster:     (moves) => (__anyMoveOfType(moves, "ghost") || __anyMoveOfType(moves, "dark"))    ? 6 : 0,
+    galeWings:     (moves) => (__anyMoveOfType(moves, "flying") || __anyMoveOfType(moves, "bug"))    ? 6 : 0,
+    neuroforce:    (moves) => (__anyMoveOfType(moves, "psychic") || __anyMoveOfType(moves, "fairy")) ? 6 : 0,
+    // Status-triggered damage bumpers (flameOrb/toxicOrb pairings).
+    merciless:     (moves) => {
+      // +50% damage vs statused target. Player having a status is a
+      // "frequent but not guaranteed" situation — score modestly so
+      // it's picked over flat-filler abilities but doesn't dominate.
+      let atkMoves = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) atkMoves++;
+      return atkMoves >= 2 ? 4 : 0;
+    },
+    stamina:       () => 4,                                            // fatigue damage /2 → +10% hp bst
+    toxicBoost:    (moves) => {
+      let phys = 0;
+      for (const m of moves) if (m && move[m] && move[m].split === "physical") phys++;
+      return phys >= 2 ? 5 : 0;                                        // orb-pairing atk bump
+    },
+    flareBoost:    (moves) => {
+      let spec = 0;
+      for (const m of moves) if (m && move[m] && move[m].split === "special") spec++;
+      return spec >= 2 ? 5 : 0;                                        // orb-pairing satk bump
+    },
+    // Weather / terrain paradigm abilities. Scored only when the
+    // triggering weather has a plausible uptime path (own drought /
+    // drizzle in species type OR matching ate-family member on team).
+    // We check current `weatherActive` at scorer time for fair conditionals.
+    protosynthesis: (moves) => {
+      // "Highest stat +50% in sunny." Conservative flat bump when we
+      // see any attacking move (highest stat usually atk/satk).
+      let atkMoves = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) atkMoves++;
+      return atkMoves >= 2 ? 5 : 0;
+    },
+    quarkDrive:    (moves) => {
+      let atkMoves = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) atkMoves++;
+      return atkMoves >= 2 ? 4 : 0;
+    },
+
+    // ── Status-immunity family. Dispatched by zeroing the matching
+    //    wildBuffs[status] slot inside the moveBuff wrap. Scored modestly
+    //    — immunity only pays off when the player actually carries a
+    //    status move of the matching kind, but it's reliable when it
+    //    does and pairs well with the enemy's own set-up (no self-
+    //    inflicted burn on a mon that needs its atk stat).
+    insomnia:      () => 3,                                            // sleep immunity
+    immunity:      () => 3,                                            // poison immunity
+    limber:        () => 3,                                            // paralysis immunity
+    ownTempo:      () => 3,                                            // confused immunity
+    magmaArmor:    () => 3,                                            // freeze immunity
+    waterVeil:     () => 3,                                            // burn immunity
+    // ── Status-scaling defenses. Marvel Scale = +50 % def when any
+    //    major status; Living Shield = +50 % sdef. We bump BST when
+    //    wildBuffs carry a status at inflation time — same pattern as
+    //    guts, with a re-inflation pulse via the moveBuff hook when a
+    //    status lands mid-combat.
+    marvelScale:   () => 4,
+    livingShield:  () => 4,
+    // ── Pinch abilities (overgrow / blaze / swarm / torrent). +30 % type
+    //    power below 50 % HP. Averaged over a fight the uptime is ~30 %,
+    //    so we grant a modest +10 % flat when the matching-type moves are
+    //    in the set (conservative vs the nominal 1.3×).
+    overgrow:      (moves) => __anyMoveOfType(moves, "grass")  ? 4 : 0,
+    blaze:         (moves) => __anyMoveOfType(moves, "fire")   ? 4 : 0,
+    swarm:         (moves) => __anyMoveOfType(moves, "bug")    ? 4 : 0,
+    torrent:       (moves) => __anyMoveOfType(moves, "water")  ? 4 : 0,
   };
   // Which abilities we actually dispatch effects for (others are just
   // "tagged" on the clone for flavor / consistency with display).
@@ -6544,8 +6658,16 @@
   // ─── ITEM MATCHER ────────────────────────────────────────────────────────
   // Picks the best item for this clone given its moveset, ability, and BST
   // profile. Returns null if no item slot rolled (not every enemy gets one).
-  function pickItemForClone(realId, moveIds, abilityIds, cloneMon, diff) {
+  function pickItemForClone(realId, moveIds, abilityIds, cloneMon, diff, usedItems) {
     if (typeof item === "undefined") return null;
+    // Cross-team item dedup (Phase B). The caller passes an array of item
+    // ids already consumed by teammates in the same trainer's lineup, so
+    // a 3-mon enemy team doesn't end up with three Leftovers. Items in
+    // this set are filtered out of the pool entirely — the synergy/
+    // profile branches below all defer to `pool.indexOf(x) !== -1` so a
+    // shrunken pool naturally restricts them too.
+    const usedSet = (Array.isArray(usedItems) && usedItems.length)
+      ? new Set(usedItems) : null;
     // Item-pool tier — diff.itemPoolTier staggers the silver cliff:
     //   • null    → no item (caller shouldn't have reached here, but bail safe)
     //   • "basic" → leftovers + berries + type-boosters + basic safeguards
@@ -6565,6 +6687,12 @@
     const POOL_TIER_MID_ADDS = new Set([
       "lifeOrb", "choiceBand", "choiceSpecs", "lightClay", "laggingTail",
       "metronome", "luckyPunch", "loadedDice",
+      // Phase B — weather/terrain duration-extender rocks and seeds. In
+      // vanilla these are rare items gated behind matching weather; here
+      // we add them to the mid+ pool so that a drought/drizzle/etc. clone
+      // can pair them for extended uptime (see synergy pick above).
+      "heatRock", "dampRock", "smoothRock", "icyRock",
+      "foggySeed", "electricSeed", "grassySeed", "mistySeed",
     ]);
     const POOL_TIER_FULL_ADDS = new Set([
       "weaknessPolicy", "assaultVest", "eviolite",
@@ -6581,6 +6709,15 @@
     } else if (poolTier === "mid") {
       pool = pool.filter((id) => POOL_TIER_BASIC.has(id) || POOL_TIER_MID_ADDS.has(id));
     } // "full" or null → whole pool (null shouldn't reach here; caller pre-gates)
+    // Phase B — dedup against teammates' items. Applied AFTER the tier filter
+    // so usedSet shrinkage doesn't accidentally promote a locked-out full-tier
+    // item into an earlier tier. If the dedup would empty the pool entirely
+    // (tiny pools on a 3+ mon team), we bail on dedup — an "exhausted pool"
+    // outcome is worse than a dupe item.
+    if (usedSet && usedSet.size) {
+      const deduped = pool.filter((id) => !usedSet.has(id));
+      if (deduped.length) pool = deduped;
+    }
     if (!pool.length) return null;
     const moves = Array.isArray(moveIds) ? moveIds : [];
     // Accept either a single string (legacy) or an array of ability ids (new
@@ -6593,12 +6730,37 @@
       return avail.length ? avail[Math.floor(Math.random() * avail.length)] : null;
     };
 
-    // Ability-item synergies — NO forcing, probabilistic. High % because the
-    // combo is clearly the intended play pattern, but we still sometimes roll
-    // something else so the player doesn't see the same combo every time.
-    if (abilitySet.has("guts")       && item.flameOrb   && pool.indexOf("flameOrb")   !== -1 && Math.random() < 0.65) return "flameOrb";
-    if (abilitySet.has("poisonHeal") && item.toxicOrb   && pool.indexOf("toxicOrb")   !== -1 && Math.random() < 0.65) return "toxicOrb";
-    if (abilitySet.has("ironFist")   && item.luckyPunch && pool.indexOf("luckyPunch") !== -1 && Math.random() < 0.50) return "luckyPunch";
+    // Ability-item synergies — NO forcing, probabilistic. Rates retuned in
+    // Phase B: we dropped them from 65/65/50 to 45/45/35 so enemies DON'T
+    // see the same combo every time (still heavily preferred over a blind
+    // roll, but closer to half-half now for genuine diversity).
+    if (abilitySet.has("guts")       && item.flameOrb   && pool.indexOf("flameOrb")   !== -1 && Math.random() < 0.45) return "flameOrb";
+    if (abilitySet.has("poisonHeal") && item.toxicOrb   && pool.indexOf("toxicOrb")   !== -1 && Math.random() < 0.45) return "toxicOrb";
+    if (abilitySet.has("ironFist")   && item.luckyPunch && pool.indexOf("luckyPunch") !== -1 && Math.random() < 0.35) return "luckyPunch";
+    // Phase B — toxic/flare boost orb pairings (lower than guts because
+    // the abilities are rarer and we want the combo to feel like a
+    // reward, not a crutch).
+    if (abilitySet.has("toxicBoost") && item.toxicOrb   && pool.indexOf("toxicOrb")   !== -1 && Math.random() < 0.45) return "toxicOrb";
+    if (abilitySet.has("flareBoost") && item.flameOrb   && pool.indexOf("flameOrb")   !== -1 && Math.random() < 0.45) return "flameOrb";
+    // Phase B — weather / terrain setter + duration-extender rock/seed.
+    // User design goal: occasionally hand the enemy a rock/seed so their
+    // auto-set weather/terrain sticks for 25+ turns instead of the base
+    // 15, putting pressure on the player to clear or play around it. RARE
+    // by design — the next enemy rarely shares the type to benefit, so
+    // the weather ends up being a "trap" for the player more than a boon
+    // for the enemy side. Hit rate per setter ≈ 15 %.
+    const WEATHER_ROCK_FOR = {
+      drought: "heatRock", drizzle: "dampRock",
+      sandStream: "smoothRock", snowWarning: "icyRock",
+      somberField: "foggySeed",
+      electricSurge: "electricSeed", grassySurge: "grassySeed", mistySurge: "mistySeed",
+    };
+    for (const abId of Object.keys(WEATHER_ROCK_FOR)) {
+      const rockId = WEATHER_ROCK_FOR[abId];
+      if (abilitySet.has(abId) && item[rockId] && pool.indexOf(rockId) !== -1 && Math.random() < 0.15) {
+        return rockId;
+      }
+    }
 
     // Mega stone — post-silver tier gate + split-aware pick. When a species
     // has multiple stones (Charizard X vs Y, Mewtwo X vs Y), choose the one
@@ -6636,7 +6798,8 @@
     // The old hardcoded set had typos (iconBeam isn't a real move) and
     // missed ~half the multihit pool (twineedle / dualWingbeat / etc.).
     const isMultiHit = (m) => m && move[m] && Array.isArray(move[m].multihit);
-    if (moves.some(isMultiHit) && item.loadedDice && pool.indexOf("loadedDice") !== -1 && Math.random() < 0.6) {
+    // Phase B: dropped 60 % → 40 % so multihit clones aren't always Loaded Dice.
+    if (moves.some(isMultiHit) && item.loadedDice && pool.indexOf("loadedDice") !== -1 && Math.random() < 0.40) {
       return "loadedDice";
     }
 
@@ -6666,9 +6829,14 @@
       };
       const booster = BOOSTER_BY_TYPE[dominantType];
       const gem     = GEM_BY_TYPE[dominantType];
-      // 70/30 booster vs gem
-      if (Math.random() < 0.7 && booster && item[booster] && pool.indexOf(booster) !== -1) return booster;
-      if (gem && item[gem] && pool.indexOf(gem) !== -1) return gem;
+      // Phase B: the type-dominance hit rate was effectively 100 % (either
+      // booster OR gem always returned). Now 55 % overall chance to pick
+      // one — the rest of the time we fall through to the profile-based
+      // picks below for more diverse outcomes.
+      if (Math.random() < 0.55) {
+        if (Math.random() < 0.7 && booster && item[booster] && pool.indexOf(booster) !== -1) return booster;
+        if (gem && item[gem] && pool.indexOf(gem) !== -1) return gem;
+      }
     }
 
     // Eviolite for non-final evolutions (non-mega).
@@ -6709,12 +6877,30 @@
     // extends positive buff DURATION (e.g. Reflect / Light Screen turns) and
     // provides no benefit to a solo attacker with no such setup. Kept only
     // for profiles that actually run buff/setup moves (setupCount branch).
-    if (physCount >= 3 && specCount === 0) { const pick = maybe(["choiceBand","lifeOrb"]); if (pick) return pick; }
-    if (specCount >= 3 && physCount === 0) { const pick = maybe(["choiceSpecs","lifeOrb"]); if (pick) return pick; }
-    if (setupCount >= 1)                    { const pick = maybe(["lifeOrb","leftovers","weaknessPolicy","lightClay"]); if (pick) return pick; }
-    if (fragile)                            { const pick = maybe(["leftovers","weaknessPolicy","mentalHerb"]); if (pick) return pick; }
-    if (bulky)                              { const pick = maybe(["leftovers","assaultVest","heavyDutyBoots"]); if (pick) return pick; }
-    if (statusCount >= 1)                   { const pick = maybe(["leftovers","mentalHerb"]); if (pick) return pick; }
+    // Phase B: profile-based buckets are now PROBABILISTIC (~65 %) instead
+    // of deterministic returns. Before, a monotype-physical attacker always
+    // landed on choiceBand/lifeOrb and a bulky mon always got leftovers/
+    // assaultVest. Now the remaining ~35 % of the time those mons fall
+    // through to the generic-pool roll, so the full item catalogue gets
+    // airtime — clear amulet, quick claw, metronome, lagging tail, etc.
+    if (physCount >= 3 && specCount === 0 && Math.random() < 0.65) {
+      const pick = maybe(["choiceBand","lifeOrb"]); if (pick) return pick;
+    }
+    if (specCount >= 3 && physCount === 0 && Math.random() < 0.65) {
+      const pick = maybe(["choiceSpecs","lifeOrb"]); if (pick) return pick;
+    }
+    if (setupCount >= 1 && Math.random() < 0.60) {
+      const pick = maybe(["lifeOrb","leftovers","weaknessPolicy","lightClay"]); if (pick) return pick;
+    }
+    if (fragile && Math.random() < 0.60) {
+      const pick = maybe(["leftovers","weaknessPolicy","mentalHerb","quickClaw"]); if (pick) return pick;
+    }
+    if (bulky && Math.random() < 0.60) {
+      const pick = maybe(["leftovers","assaultVest","heavyDutyBoots","clearAmulet"]); if (pick) return pick;
+    }
+    if (statusCount >= 1 && Math.random() < 0.55) {
+      const pick = maybe(["leftovers","mentalHerb","metronome"]); if (pick) return pick;
+    }
 
     // Fallback: flat roll from pool, EXCLUDING type-specific items (boosters +
     // gems) — those only make sense when the moveset matches their type. If
@@ -6973,6 +7159,114 @@
       clone.bst.def  *= 1.08;
       clone.bst.sdef *= 1.08;
     }
+
+    // ═════════════════════════════════════════════════════════════════
+    // PHASE B BST branches
+    // ═════════════════════════════════════════════════════════════════
+    // ── Tinted Lens: resisted becomes neutral. Conservative universal
+    // bump since player types aren't knowable at inflation time.
+    if (abilityId === "tintedLens") {
+      if (hasPhys) clone.bst.atk  *= 1.15;
+      if (hasSpec) clone.bst.satk *= 1.15;
+    }
+    // ── Mega Launcher: pulse moves BP×1.5. Detected via name regex
+    // (water/dragon/origin pulse, auraSphere — matches Pokechill's
+    // movesAffectedByMegaLauncher list).
+    if (abilityId === "megaLauncher") {
+      let hasPulse = false;
+      for (const m of moves) if (m && /pulse|auraSphere/i.test(m)) { hasPulse = true; break; }
+      if (hasPulse) {
+        if (hasPhys) clone.bst.atk  *= 1.20;
+        if (hasSpec) clone.bst.satk *= 1.20;
+      }
+    }
+    // ── Metalhead: head/butt moves BP×1.5.
+    if (abilityId === "metalhead") {
+      let hasHead = false;
+      for (const m of moves) if (m && /head|butt/i.test(m)) { hasHead = true; break; }
+      if (hasHead) {
+        if (hasPhys) clone.bst.atk  *= 1.20;
+        if (hasSpec) clone.bst.satk *= 1.20;
+      }
+    }
+    // ── Speed-up families (prankster / galeWings / neuroforce). Pokechill
+    // dispatches these as "move X executes 1.5× faster" — we approximate
+    // via +2 bst.spe when the moveset has at least one matching move.
+    if (abilityId === "prankster"
+        && (__anyMoveOfType(moves, "ghost") || __anyMoveOfType(moves, "dark"))) {
+      clone.bst.spe += 2;
+    }
+    if (abilityId === "galeWings"
+        && (__anyMoveOfType(moves, "flying") || __anyMoveOfType(moves, "bug"))) {
+      clone.bst.spe += 2;
+    }
+    if (abilityId === "neuroforce"
+        && (__anyMoveOfType(moves, "psychic") || __anyMoveOfType(moves, "fairy"))) {
+      clone.bst.spe += 2;
+    }
+    // ── Merciless: ×1.5 vs statused target. Conservative flat bump —
+    // the player has SOME status slot most of the time in a long run,
+    // but not always.
+    if (abilityId === "merciless") {
+      if (hasPhys) clone.bst.atk  *= 1.10;
+      if (hasSpec) clone.bst.satk *= 1.10;
+    }
+    // ── Stamina: fatigue damage /2. Mirror Leftovers: +10% hp pool.
+    if (abilityId === "stamina") {
+      clone.bst.hp *= 1.10;
+    }
+    // ── Toxic Boost / Flare Boost: +20% atk/satk when poisoned/burned.
+    // Orb synergy already pre-sets these statuses on switch-in, so we
+    // can check the held item at inflation time (mirrors guts logic).
+    if (abilityId === "toxicBoost" && clone.item === "toxicOrb") {
+      if (hasPhys) clone.bst.atk *= 1.20;
+    }
+    if (abilityId === "flareBoost" && clone.item === "flameOrb") {
+      // Burn halves physical attack — so flareBoost is special-focused.
+      if (hasSpec) clone.bst.satk *= 1.20;
+    }
+    // ── Protosynthesis / Quark Drive: +50% highest stat in matching
+    // weather/terrain. We bump atk AND satk +10% as a profile-agnostic
+    // proxy — the BST delta ends up roughly matching the typical
+    // "+50% of one of the four offensive stats" outcome.
+    if (abilityId === "protosynthesis" && typeof weatherActive !== "undefined"
+        && weatherActive === "sunny") {
+      if (hasPhys) clone.bst.atk  *= 1.10;
+      if (hasSpec) clone.bst.satk *= 1.10;
+    }
+    if (abilityId === "quarkDrive" && typeof weatherActive !== "undefined"
+        && weatherActive === "electricTerrain") {
+      if (hasPhys) clone.bst.atk  *= 1.10;
+      if (hasSpec) clone.bst.satk *= 1.10;
+    }
+    // ── Marvel Scale / Living Shield: +50 % def/sdef when statused.
+    // Mirror guts pattern — check wildBuffs at inflation time; moveBuff
+    // hook re-runs inflation when a status lands mid-combat.
+    const hasStatus = typeof wildBuffs === "object"
+      && (wildBuffs.burn || wildBuffs.freeze || wildBuffs.paralysis
+          || wildBuffs.poisoned || wildBuffs.sleep);
+    if (abilityId === "marvelScale" && hasStatus) {
+      clone.bst.def *= 1.30;
+    }
+    if (abilityId === "livingShield" && hasStatus) {
+      clone.bst.sdef *= 1.30;
+    }
+    // ── Pinch abilities (overgrow / blaze / swarm / torrent). Conserv-
+    // ative +10 % atk/satk on any matching-type damaging move (uptime
+    // proxy for the canonical +30 % below 50 % HP).
+    const PINCH = { overgrow: "grass", blaze: "fire", swarm: "bug", torrent: "water" };
+    if (PINCH[abilityId]) {
+      const matchType = PINCH[abilityId];
+      let hasType = false;
+      for (const m of moves) {
+        if (!m || !move[m]) continue;
+        if (move[m].type === matchType && (move[m].power || 0) > 0) { hasType = true; break; }
+      }
+      if (hasType) {
+        if (hasPhys) clone.bst.atk  *= 1.10;
+        if (hasSpec) clone.bst.satk *= 1.10;
+      }
+    }
   }
 
   // ─── CORE: cloneEnemyForCombat ───────────────────────────────────────────
@@ -7107,6 +7401,54 @@
       if (natureId) {
         clone.nature = natureId;
         __enemyCloneState[cloneId].nature = natureId;
+        // ── NATURE FIX (Phase B audit) ─────────────────────────────────
+        // Pokechill's damage formula reads `attacker.nature` but ONLY on
+        // the PLAYER side (explore.js:2504-2506 for physical attack,
+        // :2533-2535 for special). exploreCombatWild() at :3644/3673 pulls
+        // the enemy's bst.atk/satk directly with NO nature adjustment, so
+        // any nature we put on clone.nature is otherwise purely cosmetic
+        // on the enemy side.
+        // Fix: bump clone.bst directly at nature-apply time so the engine
+        // reads the already-modified stat. Mapping lifted 1:1 from
+        // Pokechill's own tooltip.js:1195-1215 stat-display logic, which
+        // is the authoritative source for "what does nature X do to
+        // stats" — NOT the explore.js damage formula (which only covers
+        // atk/satk and a subset of natures).
+        //   adamant:  atk +1 / satk -1
+        //   modest:   atk -1 / satk +1
+        //   quiet:    hp  +1 / atk  -1 / satk -1   (no spe change)
+        //   jolly:    def -1 / sdef -1 / spe  +1
+        //   bold:     hp  -1 / def  +1 / sdef +1   (no atk change)
+        //   relaxed:  hp  +1 / spe  -1
+        switch (natureId) {
+          case "adamant":
+            clone.bst.atk  = (clone.bst.atk  || 0) + 1;
+            clone.bst.satk = Math.max(1, (clone.bst.satk || 0) - 1);
+            break;
+          case "modest":
+            clone.bst.atk  = Math.max(1, (clone.bst.atk  || 0) - 1);
+            clone.bst.satk = (clone.bst.satk || 0) + 1;
+            break;
+          case "quiet":
+            clone.bst.hp   = (clone.bst.hp   || 0) + 1;
+            clone.bst.atk  = Math.max(1, (clone.bst.atk  || 0) - 1);
+            clone.bst.satk = Math.max(1, (clone.bst.satk || 0) - 1);
+            break;
+          case "jolly":
+            clone.bst.def  = Math.max(1, (clone.bst.def  || 0) - 1);
+            clone.bst.sdef = Math.max(1, (clone.bst.sdef || 0) - 1);
+            clone.bst.spe  = (clone.bst.spe  || 0) + 1;
+            break;
+          case "bold":
+            clone.bst.hp   = Math.max(1, (clone.bst.hp   || 0) - 1);
+            clone.bst.def  = (clone.bst.def  || 0) + 1;
+            clone.bst.sdef = (clone.bst.sdef || 0) + 1;
+            break;
+          case "relaxed":
+            clone.bst.hp   = (clone.bst.hp   || 0) + 1;
+            clone.bst.spe  = Math.max(1, (clone.bst.spe  || 0) - 1);
+            break;
+        }
       }
     }
 
@@ -7123,7 +7465,7 @@
         __enemyCloneState[cloneId].ability,
         __enemyCloneState[cloneId].hiddenAbility,
       ].filter(Boolean);
-      pickedItem = pickItemForClone(realId, moveIds, abilityIdsForItem, clone, diff);
+      pickedItem = pickItemForClone(realId, moveIds, abilityIdsForItem, clone, diff, opts.usedItems);
       if (pickedItem && item[pickedItem]) {
         clone.item = pickedItem;
         __enemyCloneState[cloneId].item = pickedItem;
@@ -7404,6 +7746,29 @@
       __fireAbilityOnSwitchIn(state.hiddenAbility); // dual — fires only if unlocked
     } catch (e) { console.error("[frontier-ext][enemy-ctx] switch-in dispatch failed:", e); }
 
+    // Phase B — enemy-held weather/terrain rock/seed. Vanilla changeWeather
+    // reads team[activeMember].item to bump `saved.weatherTimer`, but the
+    // enemy's item is never visible to that path. Mirror the bump here so
+    // the clone's heatRock / dampRock / etc. actually pays off when its
+    // own ability sets the matching weather. Safe no-op if the clone's
+    // ability didn't set a weather, or the rock doesn't match.
+    try {
+      if (typeof saved !== "undefined" && saved && saved.weather) {
+        const ROCK_WEATHER_MATCH = {
+          heatRock: "sunny", dampRock: "rainy", smoothRock: "sandstorm", icyRock: "hail",
+          foggySeed: "foggy",
+          electricSeed: "electricTerrain", grassySeed: "grassyTerrain", mistySeed: "mistyTerrain",
+        };
+        const expected = ROCK_WEATHER_MATCH[state.item];
+        if (expected && saved.weather === expected && item[state.item]
+            && typeof item[state.item].power === "function") {
+          saved.weatherTimer   = (saved.weatherTimer || 0) + item[state.item].power();
+          saved.weatherCooldown = Math.max(saved.weatherCooldown || 0, saved.weatherTimer);
+          if (typeof updateWildBuffs === "function") updateWildBuffs();
+        }
+      }
+    } catch (e) { /* ignore */ }
+
     // Orb self-statuses (burn / poison clone turn 1).
     try {
       if (state.item === "flameOrb" && typeof wildBuffs === "object") { wildBuffs.burn = Math.max(wildBuffs.burn || 0, 5); if (typeof updateWildBuffs === "function") updateWildBuffs(); }
@@ -7573,15 +7938,34 @@
             entries.forEach((el) => { const mv = el.dataset.move; if (mv) moveIds.push(mv); });
           }
         } catch (e) { /* ignore */ }
+        // Phase B — per-trainer item dedup. Each trainer brings a 3-mon
+        // lineup; without this, all three could end up holding Leftovers
+        // (canonical Battle Frontier trainers always have 3 DISTINCT items
+        // per team). The list is scoped to the current `upcomingTrainer`
+        // object — when the trainer is defeated and a fresh one spawns,
+        // generateTrainer builds a new object with no __zdcItemsUsed
+        // field, so the dedup list naturally resets.
+        const trainer = run.upcomingTrainer || null;
+        const usedItems = trainer ? (trainer.__zdcItemsUsed = trainer.__zdcItemsUsed || []) : null;
         const cloneId = cloneEnemyForCombat(realId, {
           diff,
           facilityId: facility.id,
           moveIds,
           isBoss: !!(run.upcomingTrainer && run.upcomingTrainer.isBoss),
+          usedItems,
         });
         if (cloneId && cloneId !== realId) {
           saved.currentPkmn = cloneId;
           dispatchOnSwitchIn(cloneId);
+          // Record this clone's item for the trainer's dedup list. Guard
+          // on actual item presence — pre-silver clones have no item, so
+          // we'd otherwise inject nulls into the set.
+          try {
+            const st = __enemyCloneState[cloneId];
+            if (st && st.item && usedItems && usedItems.indexOf(st.item) === -1) {
+              usedItems.push(st.item);
+            }
+          } catch (e) { /* ignore */ }
         }
       } catch (e) { console.error("[frontier-ext][enemy-ctx] setWildPkmn wrap failed:", e); }
       return res;
@@ -7650,6 +8034,56 @@
           state.gutsApplied = true;
           // Re-apply BST inflation path so the atk bump lands on the clone's
           // in-memory stats (cannot trust the engine to do it for us).
+          try {
+            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cloneDict) {
+              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
+              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
+              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
+            }
+          } catch (e) { /* ignore */ }
+        }
+        // ── Phase B audit additions — status-immunity abilities. Zero
+        // out the matching wildBuffs slot the moment it lands. Applies
+        // to BOTH normal and hidden slot so the dual-ability model holds
+        // consistently. ────────────────────────────────────────────────
+        const STATUS_IMMUNITY = {
+          insomnia:   "sleep",
+          immunity:   "poisoned",
+          limber:     "paralysis",
+          ownTempo:   "confused",
+          magmaArmor: "freeze",
+          waterVeil:  "burn",
+        };
+        for (const abId of Object.keys(STATUS_IMMUNITY)) {
+          const blocks = STATUS_IMMUNITY[abId];
+          if ((state.ability === abId || state.hiddenAbility === abId)
+              && buff.indexOf(blocks) !== -1
+              && typeof wildBuffs === "object" && wildBuffs[blocks]) {
+            wildBuffs[blocks] = 0;
+            if (typeof updateWildBuffs === "function") updateWildBuffs();
+          }
+        }
+        // ── Marvel Scale / Living Shield — +50 % def / sdef when a
+        // major status just landed. Same trigger/re-inflate pattern as
+        // guts. Only fires once (idempotent via state flag).
+        if ((state.ability === "marvelScale" || state.hiddenAbility === "marvelScale")
+            && !state.marvelScaleApplied
+            && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
+          state.marvelScaleApplied = true;
+          try {
+            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cloneDict) {
+              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
+              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
+              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
+            }
+          } catch (e) { /* ignore */ }
+        }
+        if ((state.ability === "livingShield" || state.hiddenAbility === "livingShield")
+            && !state.livingShieldApplied
+            && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
+          state.livingShieldApplied = true;
           try {
             const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
             if (cloneDict) {

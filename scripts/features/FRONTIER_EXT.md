@@ -374,6 +374,36 @@ time so the inline formula reads the boosted value transparently.
 | chlorophyll / swiftSwim / sandRush / slushRush / moltShed | bst.spe +3 | `weatherActive === "sunny"/"rainy"/"sandstorm"/"hail"/"foggy"` respectively |
 | unburden | bst.spe +2 | flat (many enemy items don't deplete mid-fight; conservative proxy) |
 | sandVeil / snowCloak | def&sdef ×1.08 | matching weather (evasion can't be dispatched cleanly; modeled as "harder to finish off") |
+| tintedLens | atk&satk ×1.15 | ≥2 attacking moves (conservative universal bump since player types aren't knowable at clone time) |
+| megaLauncher | atk&satk ×1.20 | any pulse/auraSphere move (name regex matches Pokechill's movesAffectedByMegaLauncher) |
+| metalhead | atk&satk ×1.20 | any head/butt move (name regex) |
+| prankster / galeWings / neuroforce | bst.spe +2 | ghost+dark / flying+bug / psychic+fairy moves respectively |
+| merciless | atk&satk ×1.10 | ≥2 attacking moves (conservative — player status uptime isn't guaranteed) |
+| stamina | bst.hp ×1.10 | flat (fatigue damage halved = bigger effective HP pool) |
+| toxicBoost | atk ×1.20 | clone.item === "toxicOrb" (orb pre-sets the status at switch-in) |
+| flareBoost | satk ×1.20 | clone.item === "flameOrb" (burn halves atk so we focus satk) |
+| protosynthesis | atk&satk ×1.10 | `weatherActive === "sunny"` |
+| quarkDrive | atk&satk ×1.10 | `weatherActive === "electricTerrain"` |
+| marvelScale | def ×1.30 | any major status on clone (checked at inflation; moveBuff hook re-inflates when status lands mid-combat) |
+| livingShield | sdef ×1.30 | any major status on clone (same re-inflation pattern) |
+| overgrow / blaze / swarm / torrent | atk&satk ×1.10 | matching grass/fire/bug/water attacking move (conservative uptime proxy for the canonical "+30 % below 50 % HP") |
+
+### Mid-combat dispatch (moveBuff wrap)
+
+In addition to the item/status plumbing described earlier, the wrap
+zeroes out specific status buffs the moment they land when the clone's
+ability makes it immune. Cancels reliably because the wrap runs after
+vanilla's moveBuff has written the flag, so we just stomp the slot
+back to 0 and call `updateWildBuffs()` to re-render.
+
+| Ability | Buff blocked |
+|---|---|
+| insomnia | `sleep` |
+| immunity | `poisoned` |
+| limber | `paralysis` |
+| ownTempo | `confused` |
+| magmaArmor | `freeze` |
+| waterVeil | `burn` |
 
 ### Cosmetic abilities we can't dispatch
 
@@ -440,13 +470,45 @@ deliberate outcome — see "Cosmetic abilities we can't dispatch" above.
 |---|---|
 | `null` | No item at all (pre-Silver) |
 | `"basic"` | leftovers, orbs (flame/toxic), quickClaw, mentalHerb, powerHerb, clearAmulet, heavyDutyBoots, all 18 type boosters |
-| `"mid"` (adds) | lifeOrb, choiceBand, choiceSpecs, lightClay, laggingTail, metronome, luckyPunch, loadedDice |
+| `"mid"` (adds) | lifeOrb, choiceBand, choiceSpecs, lightClay, laggingTail, metronome, luckyPunch, loadedDice, heatRock, dampRock, smoothRock, icyRock, foggySeed, electricSeed, grassySeed, mistySeed |
 | `"full"` (adds) | weaknessPolicy, assaultVest, eviolite, all 18 gems, mega stones (probabilistic via `getMegaStonesForSpecies`) |
 
 Ability-item synergies fire probabilistically **before** the generic
 roll, so you see thematic combos (Guts + Flame Orb, Iron Fist + Lucky
-Punch, Poison Heal + Toxic Orb) without the pool degenerating to the
-same combo every time.
+Punch, Poison Heal + Toxic Orb, Toxic/Flare Boost + matching Orb)
+without the pool degenerating to the same combo every time. Phase B
+**lowered every synergy rate** (65 % → 45 % for Guts/Poison Heal,
+50 % → 35 % for Iron Fist/Lucky Punch, 60 % → 40 % for multihit/Loaded
+Dice, 100 % → 55 % for type-dominant booster/gem) so the full item
+catalogue rotates through more evenly.
+
+**Weather-setter + rock/seed synergy (Phase B):** a clone whose
+switch-in ability is one of `drought / drizzle / sandStream /
+snowWarning / somberField / electricSurge / grassySurge / mistySurge`
+has a **15 % chance** to carry the matching duration-extender
+(`heatRock / dampRock / smoothRock / icyRock / foggySeed /
+electricSeed / grassySeed / mistySeed`). When paired, the overlay's
+`dispatchOnSwitchIn` hook reads the clone's item after `changeWeather`
+fires and appends the rock's `power()` to `saved.weatherTimer`
+(vanilla only reads `team[activeMember].item`). Rare by design — the
+next enemy in the round rarely shares the type, so the weather ends
+up blocking the *player* more than it helps the enemy's team.
+
+**Profile-based picks** (physCount≥3 → Choice Band, bulky → Leftovers/
+Assault Vest, fragile → Mental Herb/Quick Claw, etc.) now fire at
+55–65 % instead of deterministically — the remaining rolls fall
+through to a flat draw from the generic pool so every item gets
+airtime across a long run.
+
+**Per-trainer item dedup (Phase B):** each trainer's 3-Pokémon lineup
+now enforces item uniqueness — canonical Battle Frontier trainers
+always carry 3 distinct items per team, and our clone system matches
+that. The current trainer keeps a `__zdcItemsUsed` array on its own
+object; `pickItemForClone` receives it and filters the pool before
+rolling. When the trainer is defeated and a fresh one is generated,
+the field doesn't carry over (new object), so the dedup list naturally
+resets. Falls back to allowing a dupe only if the entire pool would
+be emptied by dedup (tiny pools on a 3+ mon team).
 
 ### Nature gate
 
@@ -462,30 +524,62 @@ Nature is picked by `simulateNatureFor(realId)` — a stat-profile-aware
 helper (adamant/modest/jolly/bold/quiet/relaxed) reused from the
 trainer generator for player-facing consistency.
 
+**Enemy-side stat-bump (Phase B audit).** Pokechill's damage formula
+reads `attacker.nature` but **only on the player side** — the
+`exploreCombatWild` path (enemy's attack turn) pulls the enemy's
+`bst.atk`/`satk` directly without nature adjustment, so `clone.nature`
+alone would have been purely cosmetic on the enemy. To actually bite,
+we pre-bump `clone.bst.*` by the matching +1/-1 star at nature-apply
+time. The mapping lifts 1:1 from `tooltip.js:1195-1215` (the
+authoritative stat-display logic in vanilla Pokechill):
+
+| Nature | Stat deltas |
+|---|---|
+| adamant | atk +1 / satk -1 |
+| modest | atk -1 / satk +1 |
+| quiet | hp +1 / atk -1 / satk -1 |
+| jolly | def -1 / sdef -1 / spe +1 |
+| bold | hp -1 / def +1 / sdef +1 |
+| relaxed | hp +1 / spe -1 |
+
+The engine then reads the already-modified stat, and the on-screen
+nature pill on the info row is no longer a lie.
+
 ---
 
 ## Testing
 
-Playwright probes (not shipped in this patch — available in the
-development fork) cover:
+The overlay was validated against a Playwright probe suite that lives
+on a separate **dev-only repo** (the `playground` fork — not part of
+this release). Coverage at time of merge:
 
-| Probe | What it covers |
+| Suite | Assertions |
 |---|---|
-| `_probe_full_tour.js` | Smoke-test every facility: start → launch → abandon cycle |
-| `_probe_cheat_and_gold.js` | Exploit attempts (streak injection, duplicate-run, save-editor symbol flip, theme-index overflow, Arena switch block) + silver/gold grant per facility |
-| `_probe_arena_live.js` | Live Arena combat — verifies judge fires exactly once per matchup, no rAF-loop leaks |
-| `_probe_arena_ko_reset.js` | Verifies arena counters reset when a player Pokémon dies outside a verdict |
-| `_probe_arena_noswitch.js` | Voluntary switches blocked mid-matchup; post-KO auto-switch allowed |
-| `_probe_factory_flow.js` | Factory rental pool generation + modal flow |
-| `_probe_pause_flow.js` | Rest / Resume / F5 survival |
-| `_probe_close_lock.js` | × button + backdrop-click locked during active runs |
+| tierMatrix (7 facilities × 4 tiers × 30 samples) | 810 |
+| banned enemy moves (28 combos × 5 spawns × 40 tests) | 5600 |
+| level-100 gate | 3 |
+| facility-specific rules (Palace nature, Arena judge, Dome bracket, Factory rental, Pike doors, Pyramid floors, Tower streak) | 7 |
+| brain fight detection (7 facilities × 2 stages) | 14 |
+| mega stone roll + transform | 2 |
+| BST monotonicity (pre-silver → silver → gold → boss) | 5 |
+| filterBannedEnemyMoves output shape | 4 |
+| move-gen sanity (50 species × 50 generations) | 50 |
+| ZdC entry gate (Oak tutorial) | 2 |
+| applyItemBstInflation (CB / Specs / LO / Lefts / Evio) | 9 |
+| type-booster gating (charcoal ≥2 fire moves) | 2 |
+| dual ability dispatch on boss (normal + hidden both set) | 3 |
+| hidden-ability rate at gold non-boss (~75 % target) | 1 |
+| facility backgrounds per tile | 7 |
+| zdc.png asset HEAD 200 | 1 |
+| **Total** | **6520 / 6520 pass** |
 
-Run any probe with:
-
-```bash
-python -m http.server 8765         # from repo root
-node _probe_<name>.js              # separate terminal
-```
+Full-tour / arena-live / cheat-and-gold suites plus legacy pause /
+close-lock probes also green. The probe harness was re-run after every
+phase (Phase 1 ability activation, Phase B damage-calc expansion) to
+confirm no regressions. Probes themselves are intentionally not
+shipped — they pull a maintainer-local `save.json` and a running
+`python -m http.server` instance, neither of which is part of a
+player's install.
 
 ---
 
