@@ -126,7 +126,7 @@
         teamSilver: ["heracross", "umbreon", "shedinja"],
         teamGold: ["umbreon", "gengar", "breloom"] },
       iconSvg: ICON_ARENA,
-      background: "lab",
+      background: "gym",
       hueRotate: 0,
       rules: { threeTurnJudge: true },
       battlesPerRound: 7,
@@ -144,7 +144,7 @@
         teamSilver: ["swampert", "salamence", "charizard"],
         teamGold: ["swampert", "latias", "metagross"] },
       iconSvg: ICON_DOME,
-      background: "town",
+      background: "gym",
       hueRotate: 320,
       rules: { bracketTournament: true, bracketSize: 4, previewEnemy: true, pickSubset: 2 },
       // Bulbapedia: Silver at 20 battles, Gold at 40 battles. Our bracket
@@ -164,7 +164,7 @@
         teamSilver: null, // Noland uses random rentals himself, like the player
         teamGold: null },
       iconSvg: ICON_FACTORY,
-      background: "cave",
+      background: "lab",
       hueRotate: 160,
       rules: { rentalPool: true, swapAfterWin: true },
       battlesPerRound: 7,
@@ -182,7 +182,7 @@
         teamSilver: ["seviper", "shuckle", "milotic"],
         teamGold: ["seviper", "gyarados", "steelix"] },
       iconSvg: ICON_PIKE,
-      background: "mountain",
+      background: "gymCard",
       hueRotate: -40,
       rules: { chooseDoor: true, persistHpStatus: true, roomCount: 14 },
       // Bulbapedia: Silver at 14 rooms (round 1, the very first challenge),
@@ -202,7 +202,7 @@
         teamSilver: ["regirock", "regice", "registeel"],
         teamGold: ["articuno", "zapdos", "moltres"] },
       iconSvg: ICON_PYRAMID,
-      background: "desert",
+      background: "cave",
       hueRotate: 30,
       rules: { gridNav: true, persistHpStatus: true, gridSize: 7 },
       // Bulbapedia: Silver at 21 floors (round 3), Gold at 70 floors (round 10)
@@ -295,53 +295,88 @@
   //   useSeededRng,      // bool — call learnPkmnMoveSeeded for reproducibility
   // }
   //
-  // IV curve: 0 → 6 linear from round 1 to goldRound, then 6 forever.
-  //   • Tour (gold 10): IV ≈ round * 0.6
-  //   • Pic  (gold 5) : IV ≈ round * 1.2
-  // Hidden ability kicks in from silverRound+1, forced from goldRound.
-  // Egg moves / signature start at silverRound.
+  // Per-run crescendo spec. Every field is a ramp derived from the two
+  // facility-relative anchors (silverRound / goldRound) so tier unlocks
+  // scale smoothly between them instead of all flipping at the medal cliff.
   function computeRunDifficulty(round, facility) {
     const silver = silverRoundFor(facility);
-    const gold = goldRoundFor(facility);
-    const mult = difficultyMultiplier(round, facility);
-    const tier = tierForRound(round, facility);
+    const gold   = goldRoundFor(facility);
+    const mult   = difficultyMultiplier(round, facility);
+    const tier   = tierForRound(round, facility);
 
-    // IV ramps from 0 (round 1) to 6 (round gold), caps at 6 post-Gold.
-    const progress = Math.min(1, Math.max(0, (round - 1) / Math.max(1, gold - 1)));
-    let ivRating = Math.round(progress * 6);
-    if (round >= gold) ivRating = 6;
+    // Progress 0→1 from round 1 to round gold. Used for continuous ramps
+    // (IV rating, STAB preference). Clamped, so rounds beyond gold stay at 1.
+    const progGold = Math.min(1, Math.max(0, (round - 1) / Math.max(1, gold - 1)));
+    // Progress specifically within the silver→gold interval (0 at silver,
+    // 1 at gold). Drives the "silver cliff flattener" ramps.
+    const progSilverToGold = Math.min(1, Math.max(0, (round - silver) / Math.max(1, gold - silver)));
 
-    // Ability override chance grows with round; forced at gold+, always
-    // hidden ability post-Gold rematches (mult >= 2).
+    // IVs — float continuous 1 → 6. Floor raised from 0 to 1 so round-1
+    // enemies already have +10% stats (no more "training dummy" early-round
+    // enemies — canon Gen 3 Frontier IVs start at 3/31 ≈ 10%, we mirror that).
+    const ivRating = 1 + progGold * 5;
+
+    // Legacy ability-chance curve (still referenced by old call sites).
     let abilityChance = 0;
     if (round >= 3) abilityChance = 0.25;
     if (round >= silver) abilityChance = 0.55;
     if (round >= gold) abilityChance = 1;
     const forceHiddenAbility = mult >= 2 || round >= gold;
 
-    // Move quality knobs — egg moves & signature kick in at Silver, always
-    // forced at Gold+ so boss mons feel unique.
-    const useEggMove = round >= silver;
+    // Move quality knobs — ramps replace the old binary flip at silver / gold.
+    // Egg moves: 0 before silver-2, 20% silver-2→silver, then smooth 60→100%
+    // up to gold (which keeps the canonical "forceSignature at Gold" guarantee).
+    const eggMoveChance = round < silver - 2 ? 0
+                        : round < silver     ? 0.2
+                        : round < gold       ? 0.6 + 0.4 * progSilverToGold
+                        :                      1.0;
+    // Signature: pre-silver kept on the old "BP ≥ 80 strong-sig" rule via
+    // signatureChance === null; silver→gold ramps 50% → 100%; post-gold always.
+    const signatureChance = round < silver ? null
+                          : round < gold   ? 0.5 + 0.5 * progSilverToGold
+                          :                  1.0;
+    // Legacy binaries retained for any remaining direct readers.
+    const useEggMove     = round >= silver;
     const forceSignature = round >= gold;
-    // Use seeded RNG for enemies from Silver onwards so the same round
-    // replays with a consistent (but varied-between-rounds) feel. Before
-    // Silver we stay fully random for early-round variety.
-    const useSeededRng = round >= silver;
+    const useSeededRng   = round >= silver;
 
-    // HP multiplier: base tier curve (4/6/8/10/12) + 2 per post-Gold level.
-    const hpMult = tier * 2 + 2 + (mult - 1) * 2;
+    // Hidden ability unlock probability — replaces the cloneEnemyForCombat
+    // binary 0.75 post-gold flip with a smooth silver→gold ramp.
+    const hiddenAbilityChance = round < silver ? 0
+                              : round < gold   ? 0.25 + 0.5 * progSilverToGold
+                              :                  0.75;
+
+    // Nature assignment probability for non-Palace facilities. Palace always
+    // gets 100% (its whole gimmick); other facilities ramp silver→gold.
+    const natureChance = round < silver ? 0
+                       : round < gold   ? 0.3 + 0.7 * progSilverToGold
+                       :                  1.0;
+
+    // Item pool tier — staggers the silver cliff over 3 rounds instead of
+    // opening the full 48-item pool in one go at silver.
+    const itemPoolTier = round < silver      ? null    // no item
+                       : round < silver + 2  ? "basic" // leftovers / berries / basic boosters
+                       : round < gold        ? "mid"   // + life orb / choices / light clay
+                       :                       "full"; // + weakness policy / mega / assault vest
+
+    // HP multiplier: base tier + post-Gold rematch bump + within-tier
+    // continuous smoothing so players feel the ramp between tier flips.
+    const hpMultBase   = 2 + tier * 2 + (mult - 1) * 2;
+    const hpMult       = hpMultBase + progGold; // +0..+1 smoothing
+
+    // Shiny rate denominator — rare by default, slightly more common during
+    // post-Gold rematches (flavour — rematch runs are "farm runs").
+    const shinyRate = mult >= 2 ? 1 / 100 : 1 / 140;
 
     return {
-      round,
-      tier,
-      mult,
-      hpMult,
-      ivRating,
-      abilityChance,
-      forceHiddenAbility,
-      useEggMove,
-      forceSignature,
-      useSeededRng };
+      round, tier, mult, hpMult, ivRating,
+      // Legacy fields (preserve API for old callers).
+      abilityChance, forceHiddenAbility, useEggMove, forceSignature, useSeededRng,
+      // New crescendo fields.
+      eggMoveChance, signatureChance,
+      hiddenAbilityChance, natureChance,
+      itemPoolTier, shinyRate,
+    };
   }
 
   // True when the upcoming battle is the LAST battle of a non-boss
@@ -1304,8 +1339,15 @@
     const normalAttacks = pool
       .filter((c) => c.mv.type === "normal" && c.mv.power >= 60 && splitMatches(c.mv))
       .sort((a, b) => (b.mv.power || 0) - (a.mv.power || 0));
+    // PRIORITY filter: moves with timer < defaultPlayerMoveTimer (2000). The
+    // `.timer !== undefined` check used to catch ANTI-priority charge moves
+    // too (Solar Beam / Hyper Beam / Sky Attack all define timer > 2000),
+    // which wrecked fast sweepers that landed a 2-turn charge as their
+    // priority fallback slot. moveDictionary uses defaultPlayerMoveTimer/1.2
+    // for priority moves (≈1667) and *1.2..*2 for charge moves.
+    const __priorityCap = (typeof defaultPlayerMoveTimer === "number") ? defaultPlayerMoveTimer : 2000;
     const priorityAttacks = pool
-      .filter((c) => c.mv.power > 0 && c.mv.timer !== undefined && splitMatches(c.mv))
+      .filter((c) => c.mv.power > 0 && typeof c.mv.timer === "number" && c.mv.timer < __priorityCap && splitMatches(c.mv))
       .sort((a, b) => (b.mv.power || 0) - (a.mv.power || 0));
 
     // Learnable-only filter for setup buckets (they live as move IDs).
@@ -1325,27 +1367,38 @@
     })();
 
     // ── SLOT 1: Signature ──
-    // Rules:
-    //   • If signature BP ≥ 80                       → always slot it
-    //   • If diff.forceSignature (Gold+)             → always slot it
-    //   • Else if BP ≥ 65 and split matches          → slot it
+    // Rules (split-match is ALWAYS a gate — Gold forcing doesn't let us
+    // slot a physical sig on a pure special attacker; that just wastes a
+    // slot):
+    //   • BP ≥ 80 + split matches  → always slot it
+    //   • diff.signatureChance roll + split matches → slot it (silver→gold ramp)
+    //   • BP ≥ 65 + split matches  → slot it
     // This guarantees mons with real signatures (Frenzy Plant 180,
-    // Sacred Fire 120, Spacial Rend 120) keep their identity.
+    // Sacred Fire 120, Spacial Rend 120) keep their identity but never
+    // get a split-mismatched sig forced in.
     if (sigKey) {
       const sig = move[sigKey];
       if (sig) {
-        const forceSig = diff && diff.forceSignature;
+        // sigChance is a silver→gold ramp 0.5→1.0 (post-gold always); pre-silver
+        // null → use the strong/okSig BP rules only. Legacy forceSignature (gold+)
+        // is subsumed by sigChance == 1.0 at/after gold, kept for back-compat.
         const strongSig = (sig.power || 0) >= 80;
-        const okSig = (sig.power || 0) >= 65 && splitMatches(sig);
-        if (forceSig || strongSig || okSig) push(sigKey);
+        const okSig     = (sig.power || 0) >= 65;
+        const sigChance = diff && typeof diff.signatureChance === "number" ? diff.signatureChance : null;
+        const sigRolled = sigChance !== null && sigChance > 0 && Math.random() < sigChance;
+        const legacy    = diff && diff.forceSignature;
+        if ((legacy || sigRolled || strongSig || okSig) && splitMatches(sig)) push(sigKey);
       }
     }
 
-    // ── SLOT 2: Egg move (post-Silver, esp. low divisions) ──
+    // ── SLOT 2: Egg move (ramp from silver-2 → gold) ──
     // Low-division mons inherit egg moves as their only "spicy" coverage
-    // per the game's genetics rule. For A/S+ we still honour the egg
-    // move but it's less unique (they already have wide pools).
-    if (eggMoveActive && eggKey && move[eggKey]) {
+    // per the game's genetics rule. The new diff.eggMoveChance ramps from
+    // 0 at pre-silver-2 → 0.2 pre-silver → 0.6..1.0 silver→gold → 1.0 at
+    // gold+, which smooths the old binary silver cliff over 5 rounds.
+    const eggChance = diff && typeof diff.eggMoveChance === "number" ? diff.eggMoveChance : null;
+    const eggRolled = eggChance !== null ? Math.random() < eggChance : eggMoveActive;
+    if (eggRolled && eggKey && move[eggKey]) {
       if (isLowDivision || chosen.length === 0) push(eggKey);
       // high divisions still get it ~50% to keep variety
       else if (Math.random() < 0.5) push(eggKey);
@@ -1450,7 +1503,10 @@
       chosen.push("tackle");
     }
 
-    return chosen.slice(0, 4);
+    // Enemy-context: filter out ally-assuming / self-KO moves that would
+    // brick a solo enemy (explosion, baton pass, teleport, u-turn, etc.).
+    // See filterBannedEnemyMoves in the ENEMY CONTEXT section.
+    return filterBannedEnemyMoves(chosen.slice(0, 4), pkmnId);
   }
 
   // Pick a sprite + a gender-matching name. Neutral sprites get a random
@@ -4023,7 +4079,6 @@
     if (bottom) {
       bottom.style.display = "block";
       bottom.innerHTML = `
-        <div style="padding:0.4rem 0.8rem;color:#7a2e1a;font-size:0.85rem;text-align:center;">${t.warn}</div>
         <div class="frontier-ext-run-actions">
           <button class="frontier-ext-action-btn primary" data-action="launch">${t.launch}</button>
           <button class="frontier-ext-action-btn danger" data-action="abandon">${t.abandon}</button>
@@ -4079,14 +4134,18 @@
       if (isSilverBoss || isGoldBoss) {
         const brainDiff = computeRunDifficulty(nextRound, facility);
         const brainTeam = isSilverBoss ? facility.brain.teamSilver : facility.brain.teamGold;
+        // NOTE: nature is required on every slot. Without it Palace's
+        // autoMoveByNature collapses to neutral — the boss fight gimmick
+        // silently breaks. The bracket path at :714-720 sets nature
+        // correctly; this simulate-fight rebuild path previously omitted it.
         trainer = {
           name: facility.brain.name,
           sprite: facility.brain.sprite,
           team: brainTeam
-            ? brainTeam.map((id) => ({ id, moves: pickMovesetFor(id, brainDiff) }))
+            ? brainTeam.map((id) => ({ id, moves: pickMovesetFor(id, brainDiff), nature: simulateNatureFor(id) }))
             : [1, 2, 3].map(() => {
                 const id = pickFromPool(3);
-                return { id, moves: pickMovesetFor(id, brainDiff) };
+                return { id, moves: pickMovesetFor(id, brainDiff), nature: simulateNatureFor(id) };
               }),
           isBoss: true,
           facilityId: facility.id,
@@ -4186,7 +4245,6 @@
     if (bottom) {
       bottom.style.display = "block";
       bottom.innerHTML = `
-        <div style="padding:0.4rem 0.8rem;color:#7a2e1a;font-size:0.85rem;text-align:center;">${t.warn}</div>
         <div class="frontier-ext-run-actions">
           <button class="frontier-ext-action-btn primary" data-action="launch">${t.launch}</button>
           <button class="frontier-ext-action-btn danger" data-action="abandon">${t.abandon}</button>
@@ -4233,6 +4291,12 @@
       // Factory is exempt (rentals replace the player's team).
       if (!isFactoryFacility(facility) && currentPreviewTeamSize() !== 3) {
         showTeamSizeError(facility);
+        return;
+      }
+      // Hard level gate — ZdC requires all 3 Pokémon at level 100.
+      // Factory exempt (rentals replace the player's team entirely).
+      if (!isFactoryFacility(facility) && !allPreviewMonsAreLvl100()) {
+        showTeamLevelError(facility);
         return;
       }
       // Pyramid-specific hard gate: the reception NPC refuses entry if
@@ -4551,6 +4615,13 @@
       // 3 Pokémon to START — the pick-2 modal comes next.
       if (currentPreviewTeamSize() !== 3) {
         showTeamSizeError(facility);
+        return;
+      }
+      // Level-100 gate fires here too so inner-preview launches (bracket
+      // preview / Dôme pre-fight / brain rebuy tooltip) refuse mixed-
+      // level teams just as firmly as the outer "start" gate.
+      if (!isFactoryFacility(facility) && !allPreviewMonsAreLvl100()) {
+        showTeamLevelError(facility);
         return;
       }
       if (isDomeFacility(facility)) {
@@ -5872,11 +5943,16 @@
           exp: p.exp,
           caught: p.caught };
       }
+      // Enemy-context: strip banned moves (explosion, uTurn, etc.) from
+      // the rental spec BEFORE we write to pkmn[id].moves. Factory rentals
+      // are player-controlled so the solo-enemy rationale is weaker, but
+      // a baton-passing rental with no bench to pass to is equally useless.
+      const cleanedRentalMoves = filterBannedEnemyMoves(rental.moves.slice(), rental.id);
       p.moves = {
-        slot1: rental.moves[0],
-        slot2: rental.moves[1],
-        slot3: rental.moves[2],
-        slot4: rental.moves[3] };
+        slot1: cleanedRentalMoves[0],
+        slot2: cleanedRentalMoves[1],
+        slot3: cleanedRentalMoves[2],
+        slot4: cleanedRentalMoves[3] };
       p.nature = rental.nature || "";
       p.ivs = { ...rental.ivs };
       p.ability = rental.ability || undefined;
@@ -5911,69 +5987,1711 @@
     run.factoryOriginalState = {};
   }
 
-  // ─── ENEMY RUNTIME STATS (non-Factory crescendo) ──────────────────────────
-  // Same stash/restore pattern as the Factory's applyFactoryMoves, but
-  // targeted at ENEMY-only species on any facility. Called from
-  // buildEphemeralRunArea to inject:
-  //   • IVs scaled by `diff.ivRating` (0..6 crescendo; see computeRunDifficulty)
-  //   • Ability override (random learnPkmnAbility pick, or hidden ability
-  //     when forceHiddenAbility is set) with probability `diff.abilityChance`
+  // ════════════════════════════════════════════════════════════════════════
+  // ENEMY CONTEXT — shadow clone system (reusable — portable to PWT module)
+  // ════════════════════════════════════════════════════════════════════════
   //
-  // Caveat — vanilla combat reads `pkmn[id]` for BOTH sides, so if the
-  // enemy's species overlaps with one the player brought, the player's own
-  // mon temporarily gains the enemy IV/ability too. This mirrors what
-  // applyFactoryMoves already does for rentals and is accepted as the
-  // Emerald "Frontier stat cap" feel.
+  // Problem this section solves
+  // ---------------------------
+  // Pokechill's combat engine reads the ENEMY's live stats from
+  // `pkmn[saved.currentPkmn].bst.{hp,atk,def,satk,sdef,spe}` + `.type`. It
+  // does NOT read `pkmn[id].ivs` or `pkmn[id].ability` on the enemy side —
+  // those fields drive PLAYER damage only (explore.js:3408/3415 etc.). So
+  // mutating the species dict's `.ivs` / `.ability` for an enemy never
+  // influenced the fight — and worse, if the enemy happened to share a
+  // species with one of the player's bench mons, the PLAYER's copy was
+  // silently tampered with for the duration.
   //
-  // `trainer.team` = [{ id, moves, nature, ... }, ...]
-  function applyEnemyRuntimeStats(run, trainer, diff) {
-    if (!run || !trainer || !diff) return;
-    if (typeof pkmn === "undefined") return;
-    // Belt & braces: if a previous combat's overrides were never cleaned
-    // up (e.g. exitCombat hook skipped due to a mid-battle crash), restore
-    // first so we don't compound stashes across combats.
-    if (run.enemyRuntimeState && Object.keys(run.enemyRuntimeState).length) {
-      restoreEnemyRuntimeStats(run);
-    }
-    run.enemyRuntimeState = {};
-    const team = Array.isArray(trainer.team) ? trainer.team : [];
-    const ivVal = Math.max(0, Math.min(6, diff.ivRating | 0));
-    for (const slot of team) {
-      if (!slot || !slot.id) continue;
-      const p = pkmn[slot.id];
-      if (!p) continue;
-      if (!run.enemyRuntimeState[slot.id]) {
-        run.enemyRuntimeState[slot.id] = {
-          ivs: p.ivs ? { ...p.ivs } : undefined,
-          ability: p.ability };
-      }
-      p.ivs = { hp: ivVal, atk: ivVal, def: ivVal, satk: ivVal, sdef: ivVal, spe: ivVal };
+  // The shadow clone fix
+  // --------------------
+  // On every setWildPkmn inside a ZdC run we:
+  //   1. JSON-deep-clone `pkmn[realId]` into `pkmn[__zdcEnemy_<realId>_<uid>]`
+  //   2. Re-attach function fields (evolve, info) by reference from the orig
+  //   3. Mutate the CLONE: inflate bst to simulate IVs, roll shiny, mega-form
+  //      swap, pick ability + item from contextual pools, strip banned moves.
+  //   4. Point `saved.currentPkmn = cloneId` so every enemy-side engine
+  //      read lands on the clone, leaving the player's species dict pristine.
+  //   5. Track the id in `__enemyCloneIds` + `saved.frontierExt.__enemyCloneIds`
+  //      for cleanup on leaveCombat / exitCombat / rest / abandon / F5.
+  //
+  // Stat-effect simulation via BST multiplication
+  // ---------------------------------------------
+  // Because the engine never reads enemy `.ivs`, the only lever to scale an
+  // enemy's "IVs" is BST itself. We multiply the clone's bst in-place:
+  //   • ivVal on atk/def/satk/sdef : × Math.pow(1.10, ivVal)      (damage lean)
+  //   • ivVal on hp                : × Math.pow(1.15, ivVal)      (vanilla HP-IV curve)
+  //   • ivVal on spe               : += ivVal * ln(0.95)/ln(0.9)  (≈ × 0.487)
+  // Silver-to-Gold scales ivVal with diff.ivRating (0..6).
+  // Post-Gold on the current facility forces ivVal = 6 for all 6 stats.
+  //
+  // Ability / item effects dispatch
+  // -------------------------------
+  // Because the engine never calls testAbility("wild", ...) and never reads
+  // item.* on the enemy either, we hand-dispatch every ability/item effect
+  // from four hook points:
+  //   • on-switch-in         (setWildPkmn wrap, after clone install)
+  //   • on-status-applied    (moveBuff wrap when target=="wild")
+  //   • end-turn             (500ms polling while a clone is active)
+  //   • on-deal-damage       (moveBuff wrap when target=="player" + mod=="self"/wild)
+  // Damage-modifier abilities / items (technician, adaptability, sheerForce,
+  // lifeOrb, choiceBand/Specs) can't re-enter the inline damage formula —
+  // we approximate them by pre-multiplying bst.atk / bst.satk at clone-
+  // creation time. Feel ≈ faithful, math ≈ within 5%.
+  //
+  // Runtime-validated dicts (user rule #1)
+  // --------------------------------------
+  // Every ability / item / move ID referenced below is gated by an existence
+  // check (`if (ability[id])`, `if (item[id])`, `if (move[id])`). Pokechill's
+  // dicts diverge from canon GameFreak names — IDs that don't exist get
+  // dropped from pools at module init so dispatch time never hits a missing
+  // entry.
+  //
+  // ════════════════════════════════════════════════════════════════════════
 
-      // Ability roll. forceHiddenAbility wins if the species has a hidden
-      // ability defined; else probabilistic `learnPkmnAbility` pick.
-      const wantHidden = diff.forceHiddenAbility && p.hiddenAbility && p.hiddenAbility.id;
-      const rollAbility = !wantHidden && diff.abilityChance > 0
-        && Math.random() < diff.abilityChance;
-      if (wantHidden) {
-        p.ability = p.hiddenAbility.id;
-      } else if (rollAbility && typeof learnPkmnAbility === "function") {
+  // Module-level live registry: every clone id we've minted and not yet
+  // destroyed. Survives across combats inside one JS session. Combined with
+  // saved.frontierExt.__enemyCloneIds which persists across reloads so an
+  // F5 mid-combat leaves no `__zdcEnemy_...` keys polluting pkmn[].
+  const __enemyCloneIds = new Set();
+  // Per-clone runtime state (consumed items, focus-sash used, etc.). Keyed
+  // by cloneId; wiped on destroy.
+  const __enemyCloneState = Object.create(null);
+  // Polling interval id for the end-turn approximation loop. One at a time.
+  let __enemyCloneTickTimer = null;
+  // MutationObserver + overlay img element handle, so we can tear them down
+  // cleanly on combat end.
+  let __enemyHeldItemObserver = null;
+  let __enemyHeldItemEl = null;
+  // Player HP snapshot for end-turn polling delta detection.
+  let __enemyCloneLastPlayerHp = null;
+  let __enemyCloneLastEnemyHp  = null;
+
+  // ─── BANNED ENEMY MOVES (solo enemy — team/ally-assuming moves) ───────────
+  // These moves either require a bench (baton pass / u-turn / healing wish)
+  // or self-KO (explosion / memento), which would brick a 1-vs-1 enemy. We
+  // strip them from every enemy moveset after generation. The set is built
+  // at module init from the intersection of the spec list with move[] — so
+  // canon-name IDs that Pokechill doesn't define drop out silently.
+  const __BANNED_ENEMY_MOVE_CANDIDATES = [
+    "batonPass", "selfDestruct", "explosion", "memento", "finalGambit",
+    "healingWish", "lunarDance", "mistyExplosion", "mindBlown", "chloroblast",
+    "destinyBond", "perishSong", "futureSight", "doomDesire", "wish",
+    "partingShot", "uTurn", "voltSwitch", "flipTurn", "teleport", "lastResort",
+  ];
+  const BANNED_ENEMY_MOVES = new Set();
+  function __initBannedEnemyMoves() {
+    if (typeof move === "undefined") return;
+    for (const id of __BANNED_ENEMY_MOVE_CANDIDATES) {
+      if (move[id]) BANNED_ENEMY_MOVES.add(id);
+    }
+  }
+
+  // ─── ITEM POOL — runtime-validated ───────────────────────────────────────
+  // Expanded to cover every held item in Pokechill's itemDictionary.js
+  // (type boosters, gems, core effects). __initItemPool filters at runtime
+  // against item[] so any ID not actually defined in the dict drops silently
+  // and is logged once for visibility.
+  const __ITEM_POOL_CANDIDATES = [
+    // Type boosters.
+    "blackBelt", "blackGlasses", "charcoal", "dragonFang", "fairyFeather",
+    "hardStone", "magnet", "metalCoat", "miracleSeed", "mysticWater",
+    "neverMeltIce", "poisonBarb", "sharpBeak", "silkScarf", "silverPowder",
+    "softSand", "spellTag", "twistedSpoon",
+    // Gems.
+    "bugGem", "darkGem", "dragonGem", "electricGem", "fairyGem",
+    "fightingGem", "fireGem", "flyingGem", "ghostGem", "grassGem",
+    "groundGem", "iceGem", "normalGem", "poisonGem", "psychicGem",
+    "rockGem", "steelGem", "waterGem",
+    // Core effects.
+    "leftovers", "lifeOrb", "choiceBand", "choiceSpecs", "flameOrb",
+    "toxicOrb", "weaknessPolicy", "loadedDice", "assaultVest", "eviolite",
+    "lightClay", "mentalHerb", "quickClaw", "metronome", "powerHerb",
+    "luckyPunch", "laggingTail", "heavyDutyBoots", "clearAmulet",
+    // ejectPack / ejectButton excluded — their effect ends with "switch to
+    // the previous/next team member" once all moves are executed. Enemies in
+    // ZdC fight solo (no bench), so the switch is a no-op at best and a
+    // combat-state bug at worst. Same reasoning as the banned moves list
+    // (batonPass / uTurn / voltSwitch / teleport …).
+  ];
+  let __ITEM_POOL_STANDARD = [];
+  function __initItemPool() {
+    if (typeof item === "undefined") return;
+    const missing = [];
+    __ITEM_POOL_STANDARD = __ITEM_POOL_CANDIDATES.filter((id) => {
+      if (item[id]) return true;
+      missing.push(id);
+      return false;
+    });
+    if (missing.length) {
+      console.info("[frontier-ext][enemy-ctx] items skipped (not in Pokechill dict):", missing.join(", "));
+    }
+  }
+
+  // ─── ABILITY SCORING — match species' moveset against ability synergy ─────
+  // Only abilities that BOTH exist in Pokechill's ability[] AND whose trigger
+  // logic we can dispatch below make it into this table. Each scoring
+  // function receives the clone's move-id array + the clone pkmn object;
+  // returns a non-negative score. Higher = better fit.
+  //
+  // Entries with `null` score fn are always-worth-picking (unconditional
+  // payoffs — weather setters, multiscale). They score a flat 5 when the
+  // species has no disqualifying profile.
+  const __ABILITY_SCORERS = {
+    // ── ACTIVE ABILITIES (every entry below has a runtime dispatcher or
+    //    BST inflation path — nothing is picked just for cosmetic flavor).
+    // ── DEFENSIVE / RESISTIVE abilities such as Multiscale, Filter, Thick
+    //    Fat, Levitate, Static, Flame Body, Poison Point used to be here as
+    //    flat scorers but had no active dispatch — the engine doesn't
+    //    expose enemy-side damage hooks. Removed per user rule "pas de
+    //    flavor — si y a pas, y a pas, roll autre chose". See the
+    //    FRONTIER_EXT.md § "Cosmetic abilities we can't dispatch" for
+    //    the full list + why each is skipped. When / if we ship Phase 2
+    //    (exploreCombatPlayer wrap) they come back here.
+
+    // Switch-in dispatchers.
+    intimidate:    () => 5,                                            // -atk on player switch-in
+    dauntingLook:  () => 5,                                            // -satk on player switch-in (new)
+    drought:       (moves) => __anyMoveOfType(moves, "fire")     ? 10 : 0,
+    drizzle:       (moves) => __anyMoveOfType(moves, "water")    ? 10 : 0,
+    sandStream:    (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 8 : 0,
+    snowWarning:   (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 8 : 0,
+    somberField:   () => 4,                                            // foggy weather setter
+    electricSurge: (moves) => __anyMoveOfType(moves, "electric") ? 6 : 0,
+    grassySurge:   (moves) => __anyMoveOfType(moves, "grass")    ? 6 : 0,
+    mistySurge:    (moves) => __anyMoveOfType(moves, "fairy")    ? 6 : 0,
+
+    // End-turn / weather heal.
+    speedBoost:    () => 7,
+    iceBody:       (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 5 : 2,
+    rainDish:      (moves, p) => (p.type||[]).some((t)=>t==="water") ? 5 : 2,
+
+    // Damage-calc (BST inflation path in applyItemBstInflation).
+    hugePower:     () => 8,
+    toughClaws:    (moves)   => __anyContactMove(moves) ? 7 : 0,
+    ironFist:      (moves)   => __anyPunchMove(moves)   ? 9 : 0,
+    strongJaw:     (moves)   => __anyBiteMove(moves)    ? 9 : 0,
+    sheerForce:    (moves)   => __countSecondaryEffectMoves(moves) >= 2 ? 10 : 0,
+    technician:    (moves)   => __countLowBpMoves(moves)           >= 2 ? 10 : 0,
+    adaptability:  (moves, p) => {
+      if (!Array.isArray(moves)) return 0;
+      const types = Array.isArray(p.type) ? p.type : [p.type];
+      let stab = 0;
+      for (const m of moves) {
+        if (!m || typeof move === "undefined" || !move[m]) continue;
+        if (types.indexOf(move[m].type) !== -1) stab++;
+      }
+      return stab >= 3 ? 6 : 0;
+    },
+    // Multi-hit damage bumper (BST atk/satk *1.18 when a multihit move exists).
+    skillLink:     (moves) => __anyMultiHitMove(moves) ? 8 : 0,
+    // Status-synergy — detected mid-combat in moveBuff wrap when status
+    // lands on the clone. Scored for species with an orb item pairing.
+    guts:          (moves) => moves.length ? 4 : 0,
+    // Conditional speed bumps (weather-setter in moveset → +3 bst.spe).
+    chlorophyll:   (moves) => __anyMoveOfType(moves, "fire")     ? 6 : 0,
+    swiftSwim:     (moves) => __anyMoveOfType(moves, "water")    ? 6 : 0,
+    sandRush:      (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 6 : 0,
+    slushRush:     (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 6 : 0,
+    moltShed:      () => 3,                                            // generic speed bump
+    // Item-synergy.
+    unburden:      () => 4,                                            // +3 bst.spe if no item
+    gorillaTactics: (moves) => {
+      // Canonical: physical attacker that locks to one move. We skip the
+      // lock (engine doesn't enforce on enemies) and grant +30% atk.
+      let phys = 0;
+      for (const m of moves) if (m && move[m] && move[m].split === "physical") phys++;
+      return phys >= 2 ? 7 : 0;
+    },
+    // Weather-conditional damage bumps.
+    solarPower:    (moves) => {
+      // +20% satk if the moveset has special fire moves (sun uptime hedge).
+      for (const m of moves) if (m && move[m] && move[m].type === "fire" && move[m].split === "special") return 6;
+      return 0;
+    },
+    sandForce:     (moves, p) => {
+      // +10% atk if species has rock/ground/steel STABs.
+      if ((p.type||[]).some((t)=>/rock|ground|steel/.test(t))) return 4;
+      return 0;
+    },
+    // Ate-family — normal-type converters. Pokechill has 14 variants
+    // (aerilate → flying, pixilate → fairy, galvanize → electric,
+    //  glaciate → ice, pyrolate → fire, terralate → ground, toxilate →
+    //  poison, hydrolate → water, ferrilate → steel, chrysilate → rock,
+    //  verdify → grass, gloomilate → ghost, espilate → psychic,
+    //  dragonMaw → dragon). Each gives +25% atk/satk when moveset has
+    //  at least one normal move (tackle fallback, quickAttack, etc.).
+    //  None of them carry an `ability.X.type` array in the moveDictionary,
+    //  so the type-filter loop in pickAbilityForClone was silently skipping
+    //  them — the push loop is now lenient for ability-scorer entries
+    //  without type.
+    aerilate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    pixilate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    galvanize:     (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    glaciate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    pyrolate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    terralate:     (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    toxilate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    hydrolate:     (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    ferrilate:     (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    chrysilate:    (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    verdify:       (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    gloomilate:    (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    espilate:      (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    dragonMaw:     (moves) => __anyMoveOfType(moves, "normal") ? 9 : 0,
+    // Hydration-family — mid-combat status clear triggered in moveBuff wrap.
+    hydratation:   (moves, p) => (p.type||[]).some((t)=>t==="water") ? 5 : 0,
+    sandVeil:      (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 4 : 0,
+    snowCloak:     (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 4 : 0,
+  };
+  // Which abilities we actually dispatch effects for (others are just
+  // "tagged" on the clone for flavor / consistency with display).
+  let __ACTIVE_ABILITY_IDS = [];
+  function __initAbilityPool() {
+    if (typeof ability === "undefined") return;
+    const missing = [];
+    __ACTIVE_ABILITY_IDS = Object.keys(__ABILITY_SCORERS).filter((id) => {
+      if (ability[id]) return true;
+      missing.push(id);
+      return false;
+    });
+    if (missing.length) {
+      console.info("[frontier-ext][enemy-ctx] abilities skipped (not in dict):", missing.join(", "));
+    }
+  }
+
+  // ─── Move-profile helpers (used by ability scorers) ───────────────────────
+  function __anyMoveOfType(moves, type) {
+    if (!Array.isArray(moves)) return false;
+    for (const m of moves) { if (m && move[m] && move[m].type === type) return true; }
+    return false;
+  }
+  function __anyStabMove(moves, p) {
+    if (!Array.isArray(moves) || !p || !p.type) return false;
+    const types = Array.isArray(p.type) ? p.type : [p.type];
+    for (const m of moves) { if (m && move[m] && types.includes(move[m].type)) return true; }
+    return false;
+  }
+  function __countSecondaryEffectMoves(moves) {
+    if (!Array.isArray(moves)) return 0;
+    let n = 0;
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      // Pokechill's secondary-effect markers: hitEffect (status) or
+      // bonusBuff / bonusDebuff string triggers on the move def.
+      if (move[m].hitEffect || move[m].bonusBuff || move[m].bonusDebuff) n++;
+    }
+    return n;
+  }
+  function __countLowBpMoves(moves) {
+    if (!Array.isArray(moves)) return 0;
+    let n = 0;
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      const bp = move[m].power || 0;
+      if (bp > 0 && bp <= 60) n++;
+    }
+    return n;
+  }
+  function __anyMultiHitMove(moves) {
+    if (!Array.isArray(moves)) return false;
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      // Pokechill multi-hit: the field is `multihit: [min, max]` (lowercase —
+      // 28 occurrences in moveDictionary.js). Previous camelCase / .hits
+      // checks silently missed every multihit move.
+      if (Array.isArray(move[m].multihit)) return true;
+    }
+    return false;
+  }
+  function __anyContactMove(moves) {
+    if (!Array.isArray(moves)) return false;
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      const bp = move[m].power || 0;
+      // Pokechill has no dedicated "contact" flag; use (physical + has power) as a proxy.
+      if (bp > 0 && (move[m].split === "physical" || move[m].type && /fighting|normal|dark|rock|ground/.test(move[m].type))) return true;
+    }
+    return false;
+  }
+  function __anyPunchMove(moves) {
+    if (!Array.isArray(moves)) return false;
+    for (const m of moves) { if (m && /punch|fist/i.test(m)) return true; }
+    return false;
+  }
+  function __anyBiteMove(moves) {
+    if (!Array.isArray(moves)) return false;
+    for (const m of moves) { if (m && /bite|crunch|fang/i.test(m)) return true; }
+    return false;
+  }
+
+  // ─── MEGA STONE DISCOVERY ────────────────────────────────────────────────
+  // For any enemy species, find the stones it CAN hold to transform into a
+  // mega form. Reads species.evolve() (a function on the pkmn entry) and
+  // pulls out `.item` entries whose target pkmn[] still exists. Only this
+  // species' own stones, never a foreign stone.
+  function getMegaStonesForSpecies(realId) {
+    const p = (typeof pkmn !== "undefined") ? pkmn[realId] : null;
+    if (!p || typeof p.evolve !== "function") return [];
+    let evoResult;
+    try { evoResult = p.evolve(); } catch (e) { return []; }
+    if (!evoResult || typeof evoResult !== "object") return [];
+    const stones = [];
+    for (const key of Object.keys(evoResult)) {
+      const entry = evoResult[key];
+      if (!entry) continue;
+      const itmRef = entry.item;
+      const tgtRef = entry.pkmn;
+      if (!itmRef || !itmRef.id) continue;
+      if (!item[itmRef.id]) continue;          // stone missing from item dict
+      if (!item[itmRef.id].evo) continue;       // not an evolution stone
+      if (!tgtRef || !tgtRef.id) continue;
+      if (!pkmn[tgtRef.id]) continue;           // target mega form missing
+      stones.push({ stoneId: itmRef.id, megaFormId: tgtRef.id });
+    }
+    return stones;
+  }
+
+  // ─── POST-GOLD DETECTOR ──────────────────────────────────────────────────
+  // True when the player has earned Gold on this facility — triggers the
+  // "every enemy max IVs + +15% atk" super-modifier. Safe-reads through
+  // missing save structure.
+  // Tier gates — RUN-BASED, not symbol-based. The `saved.frontierExt.symbols`
+  // flags are lifetime achievements (earned once when the player first clears
+  // silver/gold round); using them for tier gating meant that after the
+  // first silver clear, EVERY subsequent fresh run would start at silver
+  // difficulty from round 1 — wrecking progression. These helpers now check
+  // whether the CURRENT combat's round has already climbed past silver/gold
+  // on the CURRENT run. Each new run naturally restarts at pre-silver tier
+  // and ramps as its round counter increments.
+  //
+  // `round` is the upcoming combat's round number (i.e. `run.round + 1`
+  // at combat-build time, same value computeRunDifficulty receives). If
+  // `round` is not passed, we fall back to reading the active run's counter.
+  function isFacilityPostSilver(facilityId, round) {
+    try {
+      if (!facilityId) return false;
+      const facility = (typeof FACILITIES !== "undefined") ? FACILITIES.find((f) => f.id === facilityId) : null;
+      if (!facility) return false;
+      let r = (typeof round === "number") ? round : null;
+      if (r === null) {
+        const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
+        if (run && run.facilityId === facilityId) r = (run.round || 0) + 1;
+      }
+      if (r === null) return false;
+      return r >= silverRoundFor(facility);
+    } catch (e) { return false; }
+  }
+  function isFacilityPostGold(facilityId, round) {
+    try {
+      if (!facilityId) return false;
+      const facility = (typeof FACILITIES !== "undefined") ? FACILITIES.find((f) => f.id === facilityId) : null;
+      if (!facility) return false;
+      let r = (typeof round === "number") ? round : null;
+      if (r === null) {
+        const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
+        if (run && run.facilityId === facilityId) r = (run.round || 0) + 1;
+      }
+      if (r === null) return false;
+      return r >= goldRoundFor(facility);
+    } catch (e) { return false; }
+  }
+  // Boss = any "enhanced trainer" stat tier:
+  //   • Brain (silverRound / goldRound / Pike final room / Pyramid brain floor)
+  //       → ZdC sets trainer.isBoss = true.
+  //   • Round guardian ("Gardien de round") = final 7/7 battle of a non-boss round
+  //       → ZdC's isMiniBossBattle() returns true. The in-game banner already
+  //         announces "stats maxées, talent caché" for these, so our ability/IV
+  //         gate must match that promise.
+  function isEnemyBoss() {
+    try {
+      const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
+      if (!run) return false;
+      if (run.upcomingTrainer && run.upcomingTrainer.isBoss) return true;
+      const facility = (typeof FACILITIES !== "undefined") ? FACILITIES.find((f) => f.id === run.facilityId) : null;
+      if (facility && typeof isMiniBossBattle === "function" && isMiniBossBattle(run, facility)) return true;
+      return false;
+    } catch (e) { return false; }
+  }
+
+  // ─── BST INFLATION for the clone ─────────────────────────────────────────
+  // Applied once at clone creation. ivVal 0..6; atkBoostActive = shiny OR
+  // post-Gold (OR-logic, never stacks).
+  function applyBstInflation(clone, ivVal, atkBoostActive) {
+    if (!clone || !clone.bst) return;
+    const iv = Math.max(0, Math.min(6, ivVal | 0));
+    const defenseStatMult = Math.pow(1.10, iv);
+    const hpMult          = Math.pow(1.15, iv);
+    // Speed equivalence: vanilla bar uses pow(0.9, bst.spe). To mimic
+    // pow(0.95, iv) extra speed, add iv * (ln 0.95 / ln 0.9) ≈ 0.487 to bst.spe.
+    const spePlus = iv * (Math.log(0.95) / Math.log(0.9));
+    clone.bst.hp   = (clone.bst.hp   || 0) * hpMult;
+    clone.bst.atk  = (clone.bst.atk  || 0) * defenseStatMult;
+    clone.bst.def  = (clone.bst.def  || 0) * defenseStatMult;
+    clone.bst.satk = (clone.bst.satk || 0) * defenseStatMult;
+    clone.bst.sdef = (clone.bst.sdef || 0) * defenseStatMult;
+    clone.bst.spe  = (clone.bst.spe  || 0) + spePlus;
+    if (atkBoostActive) {
+      clone.bst.atk  *= 1.15;
+      clone.bst.satk *= 1.15;
+    }
+  }
+
+  // ─── ABILITY MATCHER ─────────────────────────────────────────────────────
+  // Scores every candidate ability (species default + hidden + every active
+  // ability id) against the moveset, returns the winner. Hidden ability
+  // wins ties (user's "unlock hidden" preference). Returns null if nothing
+  // scores above zero (we then keep the species' default).
+  // Returns { normal, hidden } — two ability ids (either can be null):
+  //   • normal : always chosen from the canonical type-matched pool, NEVER
+  //              the species' hidden ability. This is the "default slot" every
+  //              enemy has (like a wild Pokémon's normal ability).
+  //   • hidden : filled IN ADDITION TO normal when the tier unlocks hidden
+  //              (post-Gold or boss). Mirrors Pokechill's own "hidden ability
+  //              unlocked" state for the player — when unlocked, you have
+  //              BOTH abilities active simultaneously, not hidden-replaces-
+  //              normal. Our clone state + dispatchers fire BOTH effects.
+  // `abilityGate`:
+  //   • "default-only"    → normal only (no hidden even if species has one)
+  //   • "hidden-allowed"  → normal + hidden (if species has one, probabilistic unlock)
+  //   • "hidden-forced"   → normal + hidden (hidden unlock guaranteed if present)
+  function pickAbilityForClone(realId, moveIds, cloneMon, diff, abilityGate) {
+    const p = (typeof pkmn !== "undefined") ? pkmn[realId] : null;
+    if (!p) return { normal: null, hidden: null };
+    const gate = abilityGate || "default-only";
+    const types = Array.isArray(p.type) ? p.type : [p.type];
+    const hiddenRef = p.hiddenAbility;
+    const hiddenId = hiddenRef ? (typeof hiddenRef === "object" ? hiddenRef.id : hiddenRef) : null;
+    const defaultId = p.ability ? (typeof p.ability === "object" ? p.ability.id : p.ability) : null;
+
+    // STRICT "only pick what we can dispatch" rule — __ABILITY_SCORERS is
+    // the exhaustive source of truth for actively-dispatched abilities
+    // (runtime moveBuff / switch-in / end-turn, or baked-in BST inflation).
+    // Any ability NOT in that table is either cosmetic-only (no hook) or
+    // impossible to activate without an engine rewrite (see FRONTIER_EXT.md
+    // § "Cosmetic abilities we can't dispatch"). Per user rule "1:1 Pokechill":
+    // if a species' default/hidden isn't in the table, we don't assign it —
+    // better no ability than a fake ornament.
+    const hasScorer = (id) => !!id && !!__ABILITY_SCORERS[id];
+
+    // Normal ability — scored pool, EXCLUDING the species' hidden slot.
+    const candidates = [];
+    const seen = new Set();
+    const push = (id) => {
+      if (!id || seen.has(id) || !ability[id]) return;
+      if (hiddenId && id === hiddenId) return; // reserved for hidden slot
+      if (!hasScorer(id)) return;              // strict active-only gate
+      seen.add(id);
+      const score = __ABILITY_SCORERS[id](moveIds || [], cloneMon || p);
+      candidates.push({ id, score });
+    };
+    // Species default — pushed ONLY if it's in the active table.
+    if (defaultId) push(defaultId);
+    // Walk the ability dict and push any matching active scorer.
+    // The push loop now tolerates abilities WITHOUT an `ab.type` array
+    // (Pokechill's ate-family — aerilate / pixilate / galvanize / etc.
+    // at moveDictionary.js:1095+ — have no type field; they're rolled
+    // onto any species whose moveset carries a normal move). In that case
+    // we rely on the scorer function returning 0 to exclude non-matching
+    // species. If `ab.type` IS present, keep the old type filter.
+    for (const id in ability) {
+      const ab = ability[id];
+      if (!ab) continue;
+      if (seen.has(id)) continue;
+      if (!hasScorer(id)) continue;
+      if (ab.type) {
+        if (!(ab.type.includes("all") || ab.type.some((t) => t && types.indexOf(t) !== -1))) continue;
+      }
+      push(id);
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    let normalPick = null;
+    if (candidates.length && candidates[0].score > 0) normalPick = candidates[0].id;
+    // NO fallback to species default here — if nothing in the active table
+    // scores > 0 for this species, the clone ends the fight without an
+    // ability pill on the info row. That's intentional ("dommage mais c'est
+    // comme ça" per user). Fallback only if default IS active.
+    if (!normalPick && defaultId && hasScorer(defaultId)) normalPick = defaultId;
+
+    // Hidden slot — only offered if the species' hidden ability is in the
+    // active table. Otherwise, the hidden slot stays null, matching the
+    // "1:1 Pokechill" rule — we don't fake a hidden-ability pill for an
+    // ability we can't actually make do anything.
+    let hiddenPick = null;
+    if (hiddenId && ability[hiddenId] && hasScorer(hiddenId)) {
+      if (gate === "hidden-forced") {
+        hiddenPick = hiddenId;                                  // boss: always unlocked
+      } else if (gate === "hidden-allowed") {
+        const rate = (diff && typeof diff.hiddenAbilityChance === "number")
+          ? diff.hiddenAbilityChance
+          : 0.75;
+        if (Math.random() < rate) hiddenPick = hiddenId;
+      }
+      // NOTE: diff.forceHiddenAbility (legacy ZdC scaling signal) intentionally
+      // NOT consulted — the tier gate is authoritative per user rule.
+    }
+
+    // Edge case: normalPick landed on the same id the hidden slot wants. Push
+    // the normal one to the next best active candidate so the clone truly has
+    // 2 DIFFERENT abilities firing.
+    if (hiddenPick && normalPick === hiddenPick) {
+      const alt = candidates.find((c) => c.id !== hiddenPick && c.score > 0);
+      normalPick = alt ? alt.id : null; // defaultId fallback skipped — must be different + active
+    }
+
+    return { normal: normalPick, hidden: hiddenPick };
+  }
+
+  // ─── ITEM MATCHER ────────────────────────────────────────────────────────
+  // Picks the best item for this clone given its moveset, ability, and BST
+  // profile. Returns null if no item slot rolled (not every enemy gets one).
+  function pickItemForClone(realId, moveIds, abilityIds, cloneMon, diff) {
+    if (typeof item === "undefined") return null;
+    // Item-pool tier — diff.itemPoolTier staggers the silver cliff:
+    //   • null    → no item (caller shouldn't have reached here, but bail safe)
+    //   • "basic" → leftovers + berries + type-boosters + basic safeguards
+    //   • "mid"   → + Life Orb / Choice Band+Specs / Light Clay / Loaded Dice
+    //   • "full"  → + Weakness Policy / Mega Stones / Assault Vest / Gems
+    // Over the silver→gold ramp this avoids dumping the full 48-item pool
+    // into every enemy's reach the moment silver is crossed.
+    const POOL_TIER_BASIC = new Set([
+      "leftovers", "flameOrb", "toxicOrb", "quickClaw", "mentalHerb",
+      "powerHerb", "clearAmulet", "heavyDutyBoots",
+      // Type boosters — 1.1× single type, low ceiling
+      "charcoal", "mysticWater", "miracleSeed", "magnet", "neverMeltIce",
+      "blackBelt", "poisonBarb", "softSand", "sharpBeak", "twistedSpoon",
+      "silverPowder", "hardStone", "spellTag", "dragonFang", "blackGlasses",
+      "metalCoat", "silkScarf", "fairyFeather",
+    ]);
+    const POOL_TIER_MID_ADDS = new Set([
+      "lifeOrb", "choiceBand", "choiceSpecs", "lightClay", "laggingTail",
+      "metronome", "luckyPunch", "loadedDice",
+    ]);
+    const POOL_TIER_FULL_ADDS = new Set([
+      "weaknessPolicy", "assaultVest", "eviolite",
+      // Gems — one-shot STAB boost, full-tier flavour
+      "bugGem", "darkGem", "dragonGem", "electricGem", "fairyGem",
+      "fightingGem", "fireGem", "flyingGem", "ghostGem", "grassGem",
+      "groundGem", "iceGem", "normalGem", "poisonGem", "psychicGem",
+      "rockGem", "steelGem", "waterGem",
+    ]);
+    const poolTier = diff && diff.itemPoolTier;
+    let pool = __ITEM_POOL_STANDARD;
+    if (poolTier === "basic") {
+      pool = pool.filter((id) => POOL_TIER_BASIC.has(id));
+    } else if (poolTier === "mid") {
+      pool = pool.filter((id) => POOL_TIER_BASIC.has(id) || POOL_TIER_MID_ADDS.has(id));
+    } // "full" or null → whole pool (null shouldn't reach here; caller pre-gates)
+    if (!pool.length) return null;
+    const moves = Array.isArray(moveIds) ? moveIds : [];
+    // Accept either a single string (legacy) or an array of ability ids (new
+    // dual-ability shape — normal + hidden when the species has both unlocked).
+    const abilitySet = new Set();
+    if (Array.isArray(abilityIds)) abilityIds.forEach((a) => a && abilitySet.add(a));
+    else if (abilityIds) abilitySet.add(abilityIds);
+    const maybe = (arr) => {
+      const avail = arr.filter((id) => item[id] && pool.indexOf(id) !== -1);
+      return avail.length ? avail[Math.floor(Math.random() * avail.length)] : null;
+    };
+
+    // Ability-item synergies — NO forcing, probabilistic. High % because the
+    // combo is clearly the intended play pattern, but we still sometimes roll
+    // something else so the player doesn't see the same combo every time.
+    if (abilitySet.has("guts")       && item.flameOrb   && pool.indexOf("flameOrb")   !== -1 && Math.random() < 0.65) return "flameOrb";
+    if (abilitySet.has("poisonHeal") && item.toxicOrb   && pool.indexOf("toxicOrb")   !== -1 && Math.random() < 0.65) return "toxicOrb";
+    if (abilitySet.has("ironFist")   && item.luckyPunch && pool.indexOf("luckyPunch") !== -1 && Math.random() < 0.50) return "luckyPunch";
+
+    // Mega stone — post-silver tier gate + split-aware pick. When a species
+    // has multiple stones (Charizard X vs Y, Mewtwo X vs Y), choose the one
+    // whose resulting mega form best matches the clone's moveset split —
+    // otherwise you get a pure-special Flamethrower Charizard transforming
+    // into physical Mega X half the time (audit BUG-12).
+    if (diff && (diff.ivRating || 0) >= 4 && Math.random() < 0.18) {
+      const stones = getMegaStonesForSpecies(realId);
+      if (stones.length) {
+        // Count moveset split profile to pick the best-fit mega form.
+        let physCount = 0, specCount = 0;
+        for (const m of moves) {
+          if (!m || !move[m]) continue;
+          if (move[m].split === "physical") physCount++;
+          else if (move[m].split === "special") specCount++;
+        }
+        // Score each stone by bst delta matching the moveset profile.
+        let best = stones[0], bestScore = -Infinity;
+        for (const s of stones) {
+          const megaSrc = pkmn[s.megaFormId];
+          if (!megaSrc || !megaSrc.bst) continue;
+          const delta = (megaSrc.bst.atk || 0) - (megaSrc.bst.satk || 0);
+          const profileBias = physCount - specCount; // + phys-leaning, - spec-leaning
+          const score = Math.sign(delta) === Math.sign(profileBias)
+            ? Math.abs(delta) * Math.abs(profileBias)
+            : -Math.abs(delta) * Math.abs(profileBias);
+          if (score > bestScore) { bestScore = score; best = s; }
+        }
+        return best.stoneId;
+      }
+    }
+
+    // Multi-hit → Loaded Dice.
+    // Use the canonical multihit flag from moveDictionary — `multihit: [min,max]`.
+    // The old hardcoded set had typos (iconBeam isn't a real move) and
+    // missed ~half the multihit pool (twineedle / dualWingbeat / etc.).
+    const isMultiHit = (m) => m && move[m] && Array.isArray(move[m].multihit);
+    if (moves.some(isMultiHit) && item.loadedDice && pool.indexOf("loadedDice") !== -1 && Math.random() < 0.6) {
+      return "loadedDice";
+    }
+
+    // Type-dominance → type booster/gem.
+    const typeCount = {};
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      const t = move[m].type;
+      if (t) typeCount[t] = (typeCount[t] || 0) + 1;
+    }
+    let dominantType = null, dominantCount = 0;
+    for (const t in typeCount) if (typeCount[t] > dominantCount) { dominantCount = typeCount[t]; dominantType = t; }
+    if (dominantType && dominantCount >= 3) {
+      const BOOSTER_BY_TYPE = {
+        fire:"charcoal", water:"mysticWater", grass:"miracleSeed", electric:"magnet",
+        ice:"neverMeltIce", fighting:"blackBelt", poison:"poisonBarb", ground:"softSand",
+        flying:"sharpBeak", psychic:"twistedSpoon", bug:"silverPowder", rock:"hardStone",
+        ghost:"spellTag", dragon:"dragonFang", dark:"blackGlasses", steel:"metalCoat",
+        normal:"silkScarf", fairy:"fairyFeather"
+      };
+      const GEM_BY_TYPE = {
+        fire:"fireGem", water:"waterGem", grass:"grassGem", electric:"electricGem",
+        ice:"iceGem", fighting:"fightingGem", poison:"poisonGem", ground:"groundGem",
+        flying:"flyingGem", psychic:"psychicGem", bug:"bugGem", rock:"rockGem",
+        ghost:"ghostGem", dragon:"dragonGem", dark:"darkGem", steel:"steelGem",
+        normal:"normalGem", fairy:"fairyGem"
+      };
+      const booster = BOOSTER_BY_TYPE[dominantType];
+      const gem     = GEM_BY_TYPE[dominantType];
+      // 70/30 booster vs gem
+      if (Math.random() < 0.7 && booster && item[booster] && pool.indexOf(booster) !== -1) return booster;
+      if (gem && item[gem] && pool.indexOf(gem) !== -1) return gem;
+    }
+
+    // Eviolite for non-final evolutions (non-mega).
+    if (Math.random() < 0.3 && item.eviolite && pool.indexOf("eviolite") !== -1) {
+      const p = pkmn[realId];
+      if (p && typeof p.evolve === "function") {
         try {
-          const picked = learnPkmnAbility(slot.id, 1 + (diff.mult - 1));
-          if (picked) p.ability = picked;
-        } catch (e) { /* keep original ability */ }
+          const evoResult = p.evolve();
+          for (const key in evoResult) {
+            const stone = evoResult[key] && evoResult[key].item;
+            // Non-mega means the item is NOT an evo stone (or absent).
+            if (!stone || !item[stone.id] || !item[stone.id].evo) {
+              return "eviolite";
+            }
+          }
+        } catch (e) { /* ignore */ }
       }
+    }
+
+    // Profile-based matching.
+    const bst = cloneMon && cloneMon.bst ? cloneMon.bst : { hp:3, atk:3, def:3, satk:3, sdef:3, spe:3 };
+    let physCount = 0, specCount = 0, setupCount = 0, statusCount = 0;
+    for (const m of moves) {
+      if (!m || !move[m]) continue;
+      if (move[m].split === "physical") physCount++;
+      else if (move[m].split === "special") specCount++;
+      if (/dragonDance|swordsDance|nastyPlot|calmMind|bulkUp|agility/i.test(m)) setupCount++;
+      if (/thunderWave|willOWisp|toxic|hypnosis|spore|sing|sleepPowder|stunSpore|glare/.test(m)) statusCount++;
+    }
+    // Thresholds calibrated to pkmnDictionary's real gen-3 stat scale (a
+    // glass cannon like Alakazam is ~195 hp+def+sdef, a tank like Steelix
+    // is ~300). Previous values (<10 / >=14) were on a star-scale that
+    // didn't exist — fragile never fired, bulky always did.
+    const fragile = ((bst.hp||0) + (bst.def||0) + (bst.sdef||0)) < 200;
+    const bulky   = ((bst.def||0) + (bst.sdef||0)) >= 170;
+
+    // Light Clay intentionally removed from offensive buckets — its effect
+    // extends positive buff DURATION (e.g. Reflect / Light Screen turns) and
+    // provides no benefit to a solo attacker with no such setup. Kept only
+    // for profiles that actually run buff/setup moves (setupCount branch).
+    if (physCount >= 3 && specCount === 0) { const pick = maybe(["choiceBand","lifeOrb"]); if (pick) return pick; }
+    if (specCount >= 3 && physCount === 0) { const pick = maybe(["choiceSpecs","lifeOrb"]); if (pick) return pick; }
+    if (setupCount >= 1)                    { const pick = maybe(["lifeOrb","leftovers","weaknessPolicy","lightClay"]); if (pick) return pick; }
+    if (fragile)                            { const pick = maybe(["leftovers","weaknessPolicy","mentalHerb"]); if (pick) return pick; }
+    if (bulky)                              { const pick = maybe(["leftovers","assaultVest","heavyDutyBoots"]); if (pick) return pick; }
+    if (statusCount >= 1)                   { const pick = maybe(["leftovers","mentalHerb"]); if (pick) return pick; }
+
+    // Fallback: flat roll from pool, EXCLUDING type-specific items (boosters +
+    // gems) — those only make sense when the moveset matches their type. If
+    // the type-dominance branch above didn't match them (dominantCount < 3),
+    // the clone's moveset is too mixed to benefit from a typed booster; a
+    // generic item (Leftovers / Life Orb / Choice / AV / Eviolite / …) is the
+    // logical pick. Also skip orb items (flameOrb / toxicOrb) since those are
+    // reserved for the ability pairings handled at the top of this function.
+    const typedItems = new Set(__TYPE_BOOSTERS); // boosters + gems
+    const generalPool = pool.filter((id) =>
+      id !== "flameOrb" && id !== "toxicOrb" && !typedItems.has(id)
+    );
+    if (!generalPool.length) return null;
+    return generalPool[Math.floor(Math.random() * generalPool.length)];
+  }
+
+  // ─── ITEM-INDUCED BST PRE-INFLATION ──────────────────────────────────────
+  // For items whose effect is a % damage / speed mod on the holder, pre-
+  // inflate the clone's bst so the inline damage formula reads the boosted
+  // value. These are approximations (the real game would apply after STAB
+  // etc.), but within a few percent.
+  //
+  // Item → { atk, satk, def, sdef, hp, spe } multipliers.
+  // Level assumed = 3 (mid-high). Gating conditions listed inline.
+  // Pokechill-native item effect values — NOT the official Pokémon canon
+  // values. Every formula below matches the power() / heldBonusPower()
+  // functions in `scripts/itemDictionary.js` at a representative mid-high
+  // item level (level 3, which produces ~1.18-1.60 depending on item).
+  // No canonical "lock to one move" simulation for Choice Band / Choice
+  // Specs / Choice Scarf — Pokechill's Choice items just prevent switching
+  // (irrelevant for solo enemies) + buff the matching split. Assault Vest
+  // enforces "can't use 0-power moves" on the player only (engine check at
+  // explore.js:2489 gates by team[active].item); an enemy with Assault Vest
+  // still uses status moves freely, getting a pure defensive win (fine).
+  const __ITEM_EFFECTS = {
+    // Damage bumpers that apply to every damaging move.
+    // Generic "damage dealt" items hit atk + satk both so mixed-split mons
+    // benefit on every attack.
+    lifeOrb:        { atk: 1.30, satk: 1.30 },        // power = 1 + 0.2*L
+    choiceBand:     { atk: 1.45 },                    // power = 1 + 0.15*L (physical only)
+    choiceSpecs:    { satk: 1.45 },                   // power = 1 + 0.15*L (special only)
+    lightClay:      { atk: 1.15, satk: 1.15 },        // power = 1 + 0.06*L — generic +damage
+    flameOrb:       { atk: 1.40, satk: 1.40 },        // power = 1 + 0.15*L + burn applied at switch-in
+    toxicOrb:       { atk: 1.40, satk: 1.40 },        // same + poisoned
+    weaknessPolicy: { atk: 1.15, satk: 1.15 },        // power = 1 + 0.06*L (reactive — we bake as passive)
+    // Narrow-conditional items — in Pokechill their boost applies ONLY to
+    // specific move categories. Since an arbitrary moveset rarely has >1
+    // move in the triggering category, we inflate conservatively (1.15x
+    // blanket) rather than the raw 1.55x that would apply to the ONE
+    // qualifying move. This keeps them "a nice extra" instead of overpower.
+    laggingTail:    { atk: 1.15, satk: 1.15 },        // only applies to slow moves in Pokechill
+    metronome:      { atk: 1.15, satk: 1.15 },        // only applies to stacking moves
+    luckyPunch:     { atk: 1.30, satk: 1.30 },        // only applies to Iron Fist moves —
+                                                      //   gated via ability pairing in pickItemForClone
+    // powerHerb in Pokechill speeds up 0-POWER moves; doesn't boost damage
+    // at all. For an offensive enemy that rarely uses 0-power moves, this
+    // item is effectively a no-op — so we don't inflate any stat. Still
+    // appears in the pool for flavour; just doesn't do much.
+    // ejectPack / ejectButton intentionally absent — see pool comment
+    //   (they trigger a switch-out; solo enemies can't switch).
+    // Defensive.
+    assaultVest:    { def: 1.40, sdef: 1.40 },        // power = 1 + 0.2*L
+    eviolite:       { def: 1.60, sdef: 1.60 },        // power = 1 + L/5 — gated on non-final evo in picker
+    heavyDutyBoots: { def: 1.15, sdef: 1.15 },        // power = 1 + 0.06*L
+    mentalHerb:     { def: 1.15, sdef: 1.15 },        // same — generic damage-taken reduction
+    // Speed.
+    quickClaw:      { spe: 1.20 },                    // power = 1 + 0.15*L (faster moves faster)
+    // HP / sustain — Pokechill Leftovers reduces fatigue damage (not a
+    // per-turn heal like the official games). Simulated via a bigger HP
+    // pool since the engine doesn't read enemy items to apply the fatigue
+    // reduction live.
+    leftovers:      { hp:  1.20 },                    // power = 1 + 0.2*L, applied to bst.hp
+    // Multi-hit. Applies only if moveset has a multi-hit move.
+    loadedDice:     { atk: 1.25, satk: 1.25, __requires: "multihit" },  // power = 1 + 0.1*L
+  };
+  // Type boosters + gems handled separately because they only boost 1 type.
+  const __TYPE_BOOSTERS = new Set([
+    "charcoal","mysticWater","miracleSeed","magnet","neverMeltIce","blackBelt",
+    "poisonBarb","softSand","sharpBeak","twistedSpoon","silverPowder","hardStone",
+    "spellTag","dragonFang","blackGlasses","metalCoat","silkScarf","fairyFeather",
+    "bugGem","darkGem","dragonGem","electricGem","fairyGem","fightingGem",
+    "fireGem","flyingGem","ghostGem","grassGem","groundGem","iceGem",
+    "normalGem","poisonGem","psychicGem","rockGem","steelGem","waterGem",
+  ]);
+  const TYPE_BOOSTER_MULT = 1.18;  // ≈ 1.5 × (3/4) moves of matching type
+  const GEM_MULT          = 1.10;  // gems are one-shot; smaller approximation
+
+  function applyItemBstInflation(clone, itemId, abilityId, moveIds) {
+    if (!clone || !clone.bst) return;
+    const moves = Array.isArray(moveIds) ? moveIds : [];
+    // Canonical multihit detection via the moveDictionary `multihit: [min,max]`
+    // field — the older hardcoded set missed half the pool.
+    const isMultiHit = (m) => m && move[m] && Array.isArray(move[m].multihit);
+    // Skip the item block entirely when no item is held — callers rely on
+    // the ability block still running (unburden needs itemless detection,
+    // and the hidden-ability second pass is intentionally called with null
+    // itemId so we don't double-inflate item effects). ────────────────────
+    const hasItem = !!itemId && !!item[itemId];
+
+    // Type-booster / gem path.
+    if (hasItem && __TYPE_BOOSTERS.has(itemId)) {
+      const BOOSTER_TYPE_MAP = {
+        charcoal:"fire", mysticWater:"water", miracleSeed:"grass", magnet:"electric",
+        neverMeltIce:"ice", blackBelt:"fighting", poisonBarb:"poison", softSand:"ground",
+        sharpBeak:"flying", twistedSpoon:"psychic", silverPowder:"bug", hardStone:"rock",
+        spellTag:"ghost", dragonFang:"dragon", blackGlasses:"dark", metalCoat:"steel",
+        silkScarf:"normal", fairyFeather:"fairy",
+        bugGem:"bug", darkGem:"dark", dragonGem:"dragon", electricGem:"electric",
+        fairyGem:"fairy", fightingGem:"fighting", fireGem:"fire", flyingGem:"flying",
+        ghostGem:"ghost", grassGem:"grass", groundGem:"ground", iceGem:"ice",
+        normalGem:"normal", poisonGem:"poison", psychicGem:"psychic", rockGem:"rock",
+        steelGem:"steel", waterGem:"water",
+      };
+      const t = BOOSTER_TYPE_MAP[itemId];
+      if (t) {
+        // Count moves of that type. Bail if < 2 (otherwise wasted bst).
+        let count = 0;
+        for (const m of moves) if (m && move[m] && move[m].type === t) count++;
+        if (count >= 2) {
+          const mult = /Gem$/.test(itemId) ? GEM_MULT : TYPE_BOOSTER_MULT;
+          clone.bst.atk  *= mult;
+          clone.bst.satk *= mult;
+        }
+      }
+    } else if (hasItem) {
+      const spec = __ITEM_EFFECTS[itemId];
+      if (spec) {
+        // Conditional gates.
+        let gated = false;
+        if (spec.__requires === "multihit") {
+          if (!moves.some(isMultiHit)) gated = true;
+        }
+        if (!gated) {
+          if (spec.atk)  clone.bst.atk  *= spec.atk;
+          if (spec.satk) clone.bst.satk *= spec.satk;
+          if (spec.def)  clone.bst.def  *= spec.def;
+          if (spec.sdef) clone.bst.sdef *= spec.sdef;
+          if (spec.hp)   clone.bst.hp   *= spec.hp;
+          if (spec.spe)  clone.bst.spe  += (spec.spe - 1) * 6; // speed is logarithmic; bump bst.spe stars
+        }
+      }
+    }
+
+    // Ability-driven pre-inflation (damage-calc abilities that we can't
+    // wedge into the inline formula).
+    const hasPhys = moves.some((m) => m && move[m] && move[m].split === "physical");
+    const hasSpec = moves.some((m) => m && move[m] && move[m].split === "special");
+    if (abilityId === "sheerForce" && __countSecondaryEffectMoves(moves) >= 2) {
+      if (hasPhys) clone.bst.atk  *= 1.30;
+      if (hasSpec) clone.bst.satk *= 1.30;
+    }
+    if (abilityId === "technician" && __countLowBpMoves(moves) >= 2) {
+      if (hasPhys) clone.bst.atk  *= 1.20;
+      if (hasSpec) clone.bst.satk *= 1.20;
+    }
+    if (abilityId === "adaptability" && __anyStabMove(moves, clone)) {
+      // ≈ 2.0x vs 1.5x STAB on STAB moves only. Averaged over 4 moves: +20%.
+      if (hasPhys) clone.bst.atk  *= 1.15;
+      if (hasSpec) clone.bst.satk *= 1.15;
+    }
+    if (abilityId === "hugePower") {
+      clone.bst.atk *= 1.5;
+    }
+    if (abilityId === "toughClaws") {
+      clone.bst.atk *= 1.10;
+    }
+    if (abilityId === "ironFist" && __anyPunchMove(moves)) {
+      clone.bst.atk *= 1.12;
+    }
+    if (abilityId === "strongJaw" && __anyBiteMove(moves)) {
+      clone.bst.atk *= 1.12;
+    }
+    // ── Ate-family: normal-type moves convert AND gain ~1.2x BP. Since we
+    // can't wedge into the damage calc, we bump atk/satk by ~1.25 when the
+    // clone has any normal-type attacking move. Fourteen branches — one per
+    // converter in Pokechill. ────────────────────────────────────────────
+    const ateSet = {
+      aerilate:"flying", pixilate:"fairy", galvanize:"electric", glaciate:"ice",
+      pyrolate:"fire",   terralate:"ground", toxilate:"poison", hydrolate:"water",
+      ferrilate:"steel", chrysilate:"rock",  verdify:"grass",   gloomilate:"ghost",
+      espilate:"psychic", dragonMaw:"dragon",
+    };
+    if (ateSet[abilityId]) {
+      let hasNormalAtk = false;
+      for (const m of moves) {
+        if (!m || !move[m]) continue;
+        if (move[m].type === "normal" && (move[m].power || 0) > 0) { hasNormalAtk = true; break; }
+      }
+      if (hasNormalAtk) {
+        if (hasPhys) clone.bst.atk  *= 1.25;
+        if (hasSpec) clone.bst.satk *= 1.25;
+      }
+    }
+    // ── Skill Link: every multihit rolls max hits. +18% atk/satk when the
+    // clone actually has one. Gated via canonical multihit detection.
+    if (abilityId === "skillLink" && moves.some(isMultiHit)) {
+      if (hasPhys) clone.bst.atk  *= 1.18;
+      if (hasSpec) clone.bst.satk *= 1.18;
+    }
+    // ── Unburden: doubles speed once the item is consumed. Since many
+    // enemy items aren't consumed mid-combat (choice/type-booster/etc.),
+    // we only give a modest +2 spe stars as a best-effort proxy.
+    if (abilityId === "unburden") {
+      clone.bst.spe += 2;
+    }
+    // ── Weather-speed family: doubles speed under matching weather. We
+    // read weatherActive at inflation time — the previous enemy's weather
+    // carries over if unchanged, and self-set abilities (drought + chloro-
+    // phyll combo) will already be up before this pass when dual-fired on
+    // switch-in. Conservative +3 spe stars proxy. ─────────────────────────
+    const weatherSpeed = {
+      chlorophyll:"sunny", swiftSwim:"rainy", sandRush:"sandstorm",
+      slushRush:"hail",    moltShed:"foggy",
+    };
+    if (weatherSpeed[abilityId] && typeof weatherActive !== "undefined"
+        && weatherActive === weatherSpeed[abilityId]) {
+      clone.bst.spe += 3;
+    }
+    // ── Gorilla Tactics: +30% atk (Choice Band without the lock, since
+    // we don't model move locking). Phys-only. ────────────────────────────
+    if (abilityId === "gorillaTactics" && hasPhys) {
+      clone.bst.atk *= 1.30;
+    }
+    // ── Solar Power: +50% satk in sun (canonical 1.5x) but -1/8 HP per
+    // turn (we skip the drain, player-facing is same net as +20% safe).
+    if (abilityId === "solarPower" && typeof weatherActive !== "undefined"
+        && weatherActive === "sunny" && hasSpec) {
+      clone.bst.satk *= 1.20;
+    }
+    // ── Sand Force: +30% to rock/ground/steel moves. BST averaged.
+    if (abilityId === "sandForce") {
+      let hasSandType = false;
+      for (const m of moves) {
+        if (!m || !move[m]) continue;
+        if (/rock|ground|steel/.test(move[m].type) && (move[m].power || 0) > 0) {
+          hasSandType = true; break;
+        }
+      }
+      if (hasSandType) clone.bst.atk *= 1.10;
+    }
+    // ── Guts: +50% atk when a major status is on the clone. Reads
+    // wildBuffs at inflation time so flameOrb/toxicOrb combo trips on
+    // re-inflation (moveBuff hook calls us again once .gutsApplied flips).
+    if (abilityId === "guts" && typeof wildBuffs === "object"
+        && (wildBuffs.burn || wildBuffs.poisoned || wildBuffs.paralysis)) {
+      clone.bst.atk *= 1.5;
+    }
+    // ── Sand Veil / Snow Cloak: evasion boost under matching weather.
+    // We can't model evasion cleanly, so approximate via a modest def/sdef
+    // bump (+8%) which maps to "harder to finish off" on the player side.
+    if (abilityId === "sandVeil" && typeof weatherActive !== "undefined" && weatherActive === "sandstorm") {
+      clone.bst.def  *= 1.08;
+      clone.bst.sdef *= 1.08;
+    }
+    if (abilityId === "snowCloak" && typeof weatherActive !== "undefined" && weatherActive === "hail") {
+      clone.bst.def  *= 1.08;
+      clone.bst.sdef *= 1.08;
     }
   }
 
-  function restoreEnemyRuntimeStats(run) {
-    if (!run || !run.enemyRuntimeState || typeof pkmn === "undefined") return;
-    for (const [id, orig] of Object.entries(run.enemyRuntimeState)) {
-      if (!pkmn[id]) continue;
-      pkmn[id].ivs = orig.ivs;
-      pkmn[id].ability = orig.ability;
+  // ─── CORE: cloneEnemyForCombat ───────────────────────────────────────────
+  // Builds a shadow clone of pkmn[realId] with all enemy-context mutations
+  // baked in. Registers it in both the module and save registries. Returns
+  // the clone id to the caller. Never mutates the real species entry.
+  //
+  // cloneOpts (all optional):
+  //   .diff            computeRunDifficulty result — drives ivRating, post-Gold
+  //   .facilityId      for post-Gold max-IV + atkBoost rule
+  //   .moveIds         the clone's moves (for ability/item matching)
+  //   .forceShiny      testing override; normal flow rolls 1/140
+  function cloneEnemyForCombat(realId, cloneOpts) {
+    if (typeof pkmn === "undefined" || !pkmn[realId]) return realId; // nothing to clone → fall back to orig
+    const opts = cloneOpts || {};
+    const orig = pkmn[realId];
+    const uid = Math.random().toString(36).slice(2, 8);
+    const cloneId = "__zdcEnemy_" + realId + "_" + uid;
+
+    // SHALLOW OWN-PROPERTY clone. CRITICAL: we cannot JSON-clone pkmn
+    // entries because Pokechill stores object references (hiddenAbility:
+    // ability.thickFat, signature/eggMove pointing to move objects, etc.)
+    // and function closures (evolve, info). JSON.stringify serialises those
+    // as plain data objects without methods or prototype, which breaks every
+    // engine read that expects `pkmn[id].ability.someMethod()` or
+    // `pkmn[id].evolve()` to work.
+    //
+    // Object.assign copies every own-enumerable property by REFERENCE —
+    // object refs stay as refs, functions stay as functions. We then
+    // own-copy the fields we actually need to MUTATE (bst, type) so our
+    // edits don't leak back into pkmn[realId]. All untouched reads
+    // transparently return the original species' data.
+    let clone;
+    try { clone = Object.assign({}, orig); }
+    catch (e) { console.error("[frontier-ext][enemy-ctx] shallow clone failed for", realId, e); return realId; }
+
+    // Own-copy mutable leaves: bst (we inflate), type (mega transform may swap).
+    clone.bst = Object.assign({}, orig.bst || {});
+    if (Array.isArray(orig.type)) clone.type = orig.type.slice();
+
+    clone.id = cloneId;
+    pkmn[cloneId] = clone;
+    __enemyCloneIds.add(cloneId);
+    __enemyCloneState[cloneId] = {
+      realId, uid,
+      item: null, ability: null, shiny: false, megaFormId: null,
+      focusSashConsumed: false, weaknessPolicyConsumed: false,
+      salacBerryConsumed: false, sitrusBerryConsumed: false, lumBerryConsumed: false,
+      lifeOrbRecoilPending: false,
+      speedBoostStages: 0,
+    };
+
+    const diff = opts.diff || null;
+    const facilityId = opts.facilityId || null;
+    // Tier gates use the upcoming combat's ROUND (from diff), not the
+    // lifetime symbol flags. A fresh run on a facility where silver was
+    // earned before still starts at pre-silver on round 1.
+    const __round = (diff && typeof diff.round === "number") ? diff.round : null;
+    const postSilver = facilityId ? isFacilityPostSilver(facilityId, __round) : false;
+    const postGold   = facilityId ? isFacilityPostGold(facilityId, __round)   : false;
+    const isBoss     = !!opts.isBoss || isEnemyBoss();
+
+    // IV rules:
+    //   • Boss OR post-Gold → max 6 across the board (user rule).
+    //   • Else scale with diff.ivRating (0..6), already computed by ZdC.
+    const ivVal = (postGold || isBoss) ? 6 : Math.max(0, Math.min(6, diff ? (diff.ivRating | 0) : 0));
+
+    // Shiny roll — 1/140 OR forced-shiny (testing).
+    // Shiny rate — 1/140 default, with a post-Gold rematch bump (1/100 when
+    // mult>=2) supplied via diff.shinyRate. Testing can still force via opts.
+    const __shinyRate = (diff && typeof diff.shinyRate === "number") ? diff.shinyRate : (1 / 140);
+    const isShiny = !!opts.forceShiny || (Math.random() < __shinyRate);
+    if (isShiny) clone.shiny = true;
+    const atkBoostActive = isShiny || postGold || isBoss;
+    applyBstInflation(clone, ivVal, atkBoostActive);
+    __enemyCloneState[cloneId].shiny = isShiny;
+
+    // Move list — passed by caller (pickMovesetFor output already ban-
+    // filtered via wrapEnemyMoveset). Stored on clone for ability dispatch
+    // and for any downstream code that reads .moveset.
+    const moveIds = Array.isArray(opts.moveIds) ? opts.moveIds.slice() : [];
+
+    // Ability gate (user rule — dual ability when hidden is unlocked):
+    //   • Boss         → normal + hidden BOTH active (hidden unlocked, like the
+    //                     player's "Ability Capsule unlocked" state in Pokechill)
+    //   • Post-Gold    → normal + hidden probabilistic unlock (~75% chance
+    //                     hidden is also active — RNG, not forced)
+    //   • Silver → Gold → normal only (canonical type-matched pool)
+    //   • Pre-Silver   → normal only (same as Silver)
+    const abilityGate = isBoss ? "hidden-forced"
+                      : postGold ? "hidden-allowed"
+                      : "default-only";
+    const pickedAbility = pickAbilityForClone(realId, moveIds, clone, diff, abilityGate);
+    // Normal (always the engine-visible ability reference — any legacy engine
+    // code that reads pkmn[currentPkmn].ability still gets a valid object ref).
+    if (pickedAbility && pickedAbility.normal && ability[pickedAbility.normal]) {
+      clone.ability = ability[pickedAbility.normal];
+      __enemyCloneState[cloneId].ability = pickedAbility.normal;
     }
-    run.enemyRuntimeState = {};
+    // Hidden — stored on the clone state as a string id; dispatchers read
+    // both .ability and .hiddenAbility and fire effects for each. Also kept
+    // on clone.hiddenAbility as an object ref for any legacy read.
+    if (pickedAbility && pickedAbility.hidden && ability[pickedAbility.hidden]) {
+      clone.hiddenAbility = ability[pickedAbility.hidden];
+      __enemyCloneState[cloneId].hiddenAbility = pickedAbility.hidden;
+    }
+
+    // Nature gate (user rule):
+    //   • Palace                  → ALWAYS roll a nature (Palace's whole gimmick
+    //                               is autoMoveByNature — without a nature,
+    //                               the move-pick collapses to neutral).
+    //   • Other facilities — Gold → post-Gold or boss only. Pre-Silver / Silver
+    //                               keeps the clone at neutral nature.
+    //
+    // simulateNatureFor picks a stat-profile-aware nature (adamant / modest
+    // / jolly / bold / quiet / relaxed) — identical helper used by
+    // generateTrainer so players see consistent flavor. We write the nature
+    // onto clone.nature (engine reads that) AND __enemyCloneState[cloneId].nature
+    // (our state, surfaces on the info-row for visibility).
+    // Palace is always on (autoMoveByNature gimmick). Boss is always on.
+    // Other facilities use diff.natureChance (silver→gold ramp 0.3→1.0) to
+    // smoothly grow the probability of a nature being rolled instead of a
+    // binary flip at silver.
+    const isPalace = facilityId === "frontierPalaceSecret";
+    let applyNature = isPalace || isBoss;
+    if (!applyNature) {
+      const natureRate = (diff && typeof diff.natureChance === "number") ? diff.natureChance : 0;
+      if (natureRate > 0 && Math.random() < natureRate) applyNature = true;
+    }
+    if (applyNature && typeof simulateNatureFor === "function") {
+      const natureId = simulateNatureFor(realId);
+      if (natureId) {
+        clone.nature = natureId;
+        __enemyCloneState[cloneId].nature = natureId;
+      }
+    }
+
+    // Item gate (user rule):
+    //   • Boss OR post-Silver OR post-Gold → item rolled from pool.
+    //   • Pre-Silver → NO item at all.
+    const canHaveItem = isBoss || postSilver; // postGold implies postSilver.
+    let pickedItem = null;
+    if (canHaveItem) {
+      // Pass BOTH abilities so guts+flameOrb / poisonHeal+toxicOrb / ironFist+
+      // luckyPunch synergies fire regardless of whether the trigger ability
+      // is the normal slot or the hidden slot.
+      const abilityIdsForItem = [
+        __enemyCloneState[cloneId].ability,
+        __enemyCloneState[cloneId].hiddenAbility,
+      ].filter(Boolean);
+      pickedItem = pickItemForClone(realId, moveIds, abilityIdsForItem, clone, diff);
+      if (pickedItem && item[pickedItem]) {
+        clone.item = pickedItem;
+        __enemyCloneState[cloneId].item = pickedItem;
+        // Mega-stone detection — unchanged.
+        const stones = getMegaStonesForSpecies(realId);
+        const match = stones.find((s) => s.stoneId === pickedItem);
+        if (match && pkmn[match.megaFormId]) {
+          const megaSrc = pkmn[match.megaFormId];
+          if (megaSrc.type)      clone.type = Array.isArray(megaSrc.type) ? megaSrc.type.slice() : megaSrc.type;
+          if (megaSrc.bst)       clone.bst  = Object.assign({}, megaSrc.bst);
+          if (megaSrc.ability)   clone.ability = megaSrc.ability;
+          if (megaSrc.hiddenAbility) clone.hiddenAbility = megaSrc.hiddenAbility;
+          __enemyCloneState[cloneId].megaFormId = match.megaFormId;
+          applyBstInflation(clone, ivVal, atkBoostActive);
+        }
+      }
+    }
+
+    // Pre-inflate BST for item + ability damage modifiers. We call once per
+    // active ability so that Huge Power + Iron Fist (hypothetical) or any
+    // other dual-ability bst stack compounds properly.
+    applyItemBstInflation(clone, clone.item, __enemyCloneState[cloneId].ability, moveIds);
+    if (__enemyCloneState[cloneId].hiddenAbility) {
+      // Second pass: item already applied, pass null so we don't double-inflate
+      // item effects, only the hidden ability's damage-calc contribution.
+      applyItemBstInflation(clone, null, __enemyCloneState[cloneId].hiddenAbility, moveIds);
+    }
+
+    // Orb items pre-set their status so the engine burns/poisons the clone
+    // naturally via wildBuffs on turn 1. (flameOrb / toxicOrb hold-item effect.)
+    if (clone.item === "flameOrb" && typeof wildBuffs === "object") {
+      // The buff is applied when the clone becomes active (in post-switch-in
+      // dispatcher below), not here — wildBuffs is scoped to the CURRENT
+      // active enemy and we don't know this clone is the active one yet.
+    }
+
+    // Persist cloneId → save registry for F5 cleanup.
+    try {
+      if (saved && saved.frontierExt) {
+        if (!Array.isArray(saved.frontierExt.__enemyCloneIds)) saved.frontierExt.__enemyCloneIds = [];
+        saved.frontierExt.__enemyCloneIds.push(cloneId);
+      }
+    } catch (e) { /* ignore */ }
+
+    return cloneId;
   }
+
+  // ─── destroyEnemyClone / destroyAllEnemyClones ───────────────────────────
+  function destroyEnemyClone(cloneId) {
+    if (!cloneId) return;
+    if (typeof pkmn !== "undefined" && pkmn[cloneId]) delete pkmn[cloneId];
+    __enemyCloneIds.delete(cloneId);
+    delete __enemyCloneState[cloneId];
+  }
+  function destroyAllEnemyClones() {
+    // Drop every cloneId we know about, both in-memory and in the save
+    // registry. Idempotent — safe to call from many cleanup paths.
+    for (const id of Array.from(__enemyCloneIds)) destroyEnemyClone(id);
+    try {
+      if (saved && saved.frontierExt && Array.isArray(saved.frontierExt.__enemyCloneIds)) {
+        for (const id of saved.frontierExt.__enemyCloneIds) {
+          if (typeof pkmn !== "undefined" && pkmn[id] && /^__zdcEnemy_/.test(id)) {
+            delete pkmn[id];
+          }
+        }
+        saved.frontierExt.__enemyCloneIds = [];
+      }
+    } catch (e) { /* ignore */ }
+    // Also sweep any lingering __zdcEnemy_ keys — defensive.
+    try {
+      if (typeof pkmn !== "undefined") {
+        for (const key of Object.keys(pkmn)) {
+          if (/^__zdcEnemy_/.test(key)) delete pkmn[key];
+        }
+      }
+    } catch (e) { /* ignore */ }
+    // Reset per-combat UI + timers.
+    stopEnemyCloneTick();
+    removeEnemyHeldItemOverlay();
+  }
+
+  // ─── WRAPPED MOVESET BUILDER — applies banned-move strip ──────────────────
+  // All three moveset producers (pickMovesetFor, biasPyramidWildMoveset,
+  // applyFactoryMoves) funnel their output through this. If the filter
+  // empties the set to < 2 moves, we top up with the first available
+  // non-banned STAB filler so the enemy never ends up move-less.
+  function filterBannedEnemyMoves(moveset, speciesId) {
+    if (!Array.isArray(moveset)) return moveset;
+    if (!BANNED_ENEMY_MOVES.size) return moveset;
+    // Filter undefined out too, so the top-up loop refills those slots.
+    const cleaned = moveset.filter((m) => m && !BANNED_ENEMY_MOVES.has(m));
+    // Top up to 4 by prefering type-matching learnable moves.
+    if (cleaned.length < 4 && typeof pkmn !== "undefined" && pkmn[speciesId] && typeof move !== "undefined") {
+      const p = pkmn[speciesId];
+      const types = Array.isArray(p.type) ? p.type : [p.type];
+      for (const [k, mv] of Object.entries(move)) {
+        if (cleaned.length >= 4) break;
+        if (!mv || BANNED_ENEMY_MOVES.has(k)) continue;
+        if (cleaned.includes(k)) continue;
+        if (!Array.isArray(mv.moveset)) continue;
+        if (!types.some((t) => t && mv.moveset.indexOf(t) !== -1)) continue;
+        cleaned.push(k);
+      }
+    }
+    // Absolute last resort so the enemy never ends with an undefined slot
+    // (explore.js handles missing keys but the move list UI renders blanks).
+    while (cleaned.length < 4 && typeof move !== "undefined" && move.tackle && !cleaned.includes("tackle")) {
+      cleaned.push("tackle");
+    }
+    return cleaned;
+  }
+
+  // ─── HELD-ITEM OVERLAY ───────────────────────────────────────────────────
+  // 18x18 img glued to the bottom-right of the wild sprite container. Re-
+  // drawn whenever the engine mutates the container (MutationObserver).
+  // Gated on: the current enemy has an active clone AND that clone has an
+  // item AND img/items/<id>.png exists (probed by a tiny preflight test —
+  // if the browser 404s, we just skip the icon silently on the error event).
+  function ensureEnemyHeldItemOverlay() {
+    // The old version installed a MutationObserver on the wild-sprite host
+    // with { childList, subtree, attributes: true }. Problem: our own
+    // renderEnemyHeldItemOverlay() calls host.appendChild(img) + setAttribute("src", ...)
+    // which are themselves mutations the observer would see, making it
+    // re-fire forever and freeze the main thread. Now we just render once
+    // here, and the end-turn tick keeps the overlay in sync as the clone
+    // state evolves.
+    if (typeof document === "undefined") return;
+    try { renderEnemyHeldItemOverlay(); } catch (e) { /* swallow */ }
+  }
+  function renderEnemyHeldItemOverlay() {
+    // The sprite overlay is disabled — the inline info row below the name
+    // is cleaner and shows the item label inline with the ability. Kept as
+    // a tear-down safety net in case an older element lingers from before
+    // the UI switch (hot-reload / old save).
+    if (__enemyHeldItemEl && __enemyHeldItemEl.parentNode) {
+      __enemyHeldItemEl.parentNode.removeChild(__enemyHeldItemEl);
+    }
+    __enemyHeldItemEl = null;
+    // The info row IS the item display now.
+    renderEnemyInfoRow();
+  }
+
+  // ─── ENEMY INFO ROW (ability / hidden / item) ────────────────────────────
+  // Injected between the enemy HP box and the move list, inside
+  // `.explore-header-infobox`. Shows the clone's ability (with a ★ marker
+  // if it's the hidden ability), and the held item name with a tiny icon.
+  // Empty string = no row rendered (clone has neither).
+  let __enemyInfoRowEl = null;
+  function renderEnemyInfoRow() {
+    if (typeof document === "undefined" || typeof saved === "undefined") return;
+    const nameEl = document.getElementById("explore-wild-name");
+    if (!nameEl) return;
+    // Host = the hpbox container so the row inserts right under name+hp.
+    const hpbox = nameEl.parentElement;
+    if (!hpbox) return;
+    const cid = saved && saved.currentPkmn;
+    const state = cid ? __enemyCloneState[cid] : null;
+    // Tear down when no active clone (between-fights, non-ZdC combats).
+    if (!state || (!state.ability && !state.hiddenAbility && !state.item && !state.nature)) {
+      if (__enemyInfoRowEl && __enemyInfoRowEl.parentNode) __enemyInfoRowEl.parentNode.removeChild(__enemyInfoRowEl);
+      __enemyInfoRowEl = null;
+      return;
+    }
+    // Build the row once, then keep updating its content.
+    if (!__enemyInfoRowEl) {
+      __enemyInfoRowEl = document.createElement("div");
+      __enemyInfoRowEl.className = "zdc-enemy-info-row";
+      __enemyInfoRowEl.style.cssText =
+        "display:flex;gap:0.4rem;align-items:center;font-size:0.75rem;" +
+        "color:rgba(255,255,255,0.85);margin-top:2px;flex-wrap:wrap;";
+    }
+    const parts = [];
+    // Normal ability pill.
+    if (state.ability && typeof ability !== "undefined" && ability[state.ability]) {
+      const label = (typeof format === "function") ? format(state.ability) : state.ability;
+      parts.push(
+        `<span class="zdc-enemy-ability" style="background:rgba(100,149,237,0.35);padding:1px 6px;border-radius:3px;">${label}</span>`
+      );
+    }
+    // Hidden ability pill — shown only when unlocked (dual-ability state).
+    // Gold star marker to read visually as "special".
+    if (state.hiddenAbility && typeof ability !== "undefined" && ability[state.hiddenAbility]) {
+      const label = (typeof format === "function") ? format(state.hiddenAbility) : state.hiddenAbility;
+      parts.push(
+        `<span class="zdc-enemy-hidden" style="background:rgba(200,160,60,0.40);padding:1px 6px;border-radius:3px;" title="Hidden Ability (unlocked)">` +
+        `<span style="color:#ffd86b;font-weight:bold;">★</span> ${label}</span>`
+      );
+    }
+    // Nature pill — shown when the overlay assigned one. Palace always has
+    // one (autoMoveByNature is its core gimmick), other facilities only on
+    // post-Gold or boss. Pale-green background so it's visually distinct
+    // from the blue ability / gold hidden / brown item pills.
+    if (state.nature) {
+      const label = (typeof format === "function") ? format(state.nature) : state.nature;
+      parts.push(
+        `<span class="zdc-enemy-nature" style="background:rgba(120,190,130,0.35);padding:1px 6px;border-radius:3px;" title="Nature">${label}</span>`
+      );
+    }
+    // Item pill.
+    if (state.item && typeof item !== "undefined" && item[state.item]) {
+      const label = (typeof format === "function") ? format(state.item) : state.item;
+      parts.push(
+        `<span class="zdc-enemy-item" style="background:rgba(180,130,70,0.35);padding:1px 6px;border-radius:3px;display:inline-flex;align-items:center;gap:3px;">`
+        + `<img src="img/items/${state.item}.png" style="width:14px;height:14px;image-rendering:pixelated;" onerror="this.remove()">`
+        + `${label}</span>`
+      );
+    }
+    __enemyInfoRowEl.innerHTML = parts.join("");
+    // Insert once, after the hpbox (above the moves list).
+    if (__enemyInfoRowEl.parentNode !== hpbox) {
+      hpbox.appendChild(__enemyInfoRowEl);
+    }
+  }
+  function removeEnemyInfoRow() {
+    if (__enemyInfoRowEl && __enemyInfoRowEl.parentNode) __enemyInfoRowEl.parentNode.removeChild(__enemyInfoRowEl);
+    __enemyInfoRowEl = null;
+  }
+  function removeEnemyHeldItemOverlay() {
+    try {
+      if (__enemyHeldItemObserver) __enemyHeldItemObserver.disconnect();
+    } catch (e) { /* ignore */ }
+    __enemyHeldItemObserver = null;
+    if (__enemyHeldItemEl && __enemyHeldItemEl.parentNode) {
+      __enemyHeldItemEl.parentNode.removeChild(__enemyHeldItemEl);
+    }
+    __enemyHeldItemEl = null;
+    removeEnemyInfoRow();
+  }
+
+  // ─── SWITCH-IN DISPATCHER ────────────────────────────────────────────────
+  // Fires immediately after a clone takes the field. Triggers:
+  //   • intimidate / dauntingLook  (player atk / satk -1)
+  //   • drought / drizzle / sandStream / snowWarning                (weather)
+  //   • somberField / electricSurge / grassySurge / mistySurge      (terrain)
+  //   • flameOrb / toxicOrb self-status
+  // Fire the on-switch-in effect of a single ability. Factored out so both
+  // state.ability (normal) and state.hiddenAbility (if unlocked) can each
+  // run their effect — matches Pokechill's dual-ability-on-the-player model.
+  function __fireAbilityOnSwitchIn(ab) {
+    if (!ab) return;
+    if (ab === "intimidate") {
+      if (typeof team === "object" && typeof exploreActiveMember !== "undefined" && team[exploreActiveMember]) {
+        team[exploreActiveMember].buffs = team[exploreActiveMember].buffs || {};
+        team[exploreActiveMember].buffs.atkdown1 = Math.max(team[exploreActiveMember].buffs.atkdown1 || 0, 3);
+        if (typeof updateTeamBuffs === "function") updateTeamBuffs();
+      }
+      return;
+    }
+    if (ab === "dauntingLook") {
+      // Mirror of intimidate but for special attack (satk-1 on active team member).
+      if (typeof team === "object" && typeof exploreActiveMember !== "undefined" && team[exploreActiveMember]) {
+        team[exploreActiveMember].buffs = team[exploreActiveMember].buffs || {};
+        team[exploreActiveMember].buffs.satkdown1 = Math.max(team[exploreActiveMember].buffs.satkdown1 || 0, 3);
+        if (typeof updateTeamBuffs === "function") updateTeamBuffs();
+      }
+      return;
+    }
+    // Weather setters — keys match explore.js:4027+ and teams.js:642+ so the
+    // player-side ability-on-switch-in path uses the exact same ids.
+    if (ab === "drought"       && typeof changeWeather === "function") { changeWeather("sunny");           return; }
+    if (ab === "drizzle"       && typeof changeWeather === "function") { changeWeather("rainy");           return; }
+    if (ab === "sandStream"    && typeof changeWeather === "function") { changeWeather("sandstorm");       return; }
+    if (ab === "snowWarning"   && typeof changeWeather === "function") { changeWeather("hail");            return; }
+    // Terrain / field setters — Pokechill's `changeWeather()` is a generic
+    // field-state mutator and accepts terrain keys too (see moveDictionary
+    // for psychicTerrain / electricTerrain / grassyTerrain / mistyTerrain).
+    if (ab === "somberField"   && typeof changeWeather === "function") { changeWeather("foggy");           return; }
+    if (ab === "electricSurge" && typeof changeWeather === "function") { changeWeather("electricTerrain"); return; }
+    if (ab === "grassySurge"   && typeof changeWeather === "function") { changeWeather("grassyTerrain");   return; }
+    if (ab === "mistySurge"    && typeof changeWeather === "function") { changeWeather("mistyTerrain");    return; }
+  }
+  function dispatchOnSwitchIn(cloneId) {
+    if (!cloneId) return;
+    const state = __enemyCloneState[cloneId];
+    if (!state) return;
+    try {
+      __fireAbilityOnSwitchIn(state.ability);
+      __fireAbilityOnSwitchIn(state.hiddenAbility); // dual — fires only if unlocked
+    } catch (e) { console.error("[frontier-ext][enemy-ctx] switch-in dispatch failed:", e); }
+
+    // Orb self-statuses (burn / poison clone turn 1).
+    try {
+      if (state.item === "flameOrb" && typeof wildBuffs === "object") { wildBuffs.burn = Math.max(wildBuffs.burn || 0, 5); if (typeof updateWildBuffs === "function") updateWildBuffs(); }
+      if (state.item === "toxicOrb" && typeof wildBuffs === "object") { wildBuffs.poisoned = Math.max(wildBuffs.poisoned || 0, 5); if (typeof updateWildBuffs === "function") updateWildBuffs(); }
+    } catch (e) { /* ignore */ }
+
+    // Render held-item overlay.
+    ensureEnemyHeldItemOverlay();
+    // Start end-turn polling.
+    startEnemyCloneTick();
+  }
+
+  // ─── ON-TAKE-DAMAGE DISPATCHER ───────────────────────────────────────────
+  // Called from the end-turn poll when enemy HP goes DOWN. "Damage" here
+  // is any HP loss (includes burn/poison tick, Life Orb recoil, etc.) —
+  // we only fire items that care about %HP thresholds (sitrus, salac,
+  // focus sash, weakness policy approximation).
+  function dispatchOnTakeDamage(cloneId, deltaHp) {
+    if (!cloneId) return;
+    const state = __enemyCloneState[cloneId];
+    if (!state) return;
+    if (typeof wildPkmnHp === "undefined" || typeof wildPkmnHpMax === "undefined") return;
+    const hpPct = wildPkmnHpMax > 0 ? (wildPkmnHp / wildPkmnHpMax) : 1;
+
+    // Focus Sash / Sitrus Berry / Salac Berry / Lum Berry dispatchers used
+    // to live here; they were guarded by item.X existence checks but those
+    // items are NOT defined in Pokechill's itemDictionary.js. Since neither
+    // the item pool can roll them nor the state.item can equal their ids,
+    // the branches were dead code. Removed to keep the end-turn tick lean.
+    // Weakness Policy — on super-effective damage (approx: big delta on non-
+    // full HP → any hit > 25% max). +2 atk +2 satk via wildBuffs.atkup2/satkup2.
+    if (!state.weaknessPolicyConsumed && state.item === "weaknessPolicy" && item.weaknessPolicy && deltaHp > wildPkmnHpMax * 0.25) {
+      try { if (typeof wildBuffs === "object") { wildBuffs.atkup2 = Math.max(wildBuffs.atkup2 || 0, 3); wildBuffs.satkup2 = Math.max(wildBuffs.satkup2 || 0, 3); if (typeof updateWildBuffs === "function") updateWildBuffs(); } } catch (e) { /* ignore */ }
+      state.weaknessPolicyConsumed = true;
+      state.item = null;
+    }
+  }
+
+  // ─── END-TURN DISPATCHER ─────────────────────────────────────────────────
+  // Fired from the polling tick every ~500ms. Applies:
+  //   • leftovers  → heal 1/16 max (if not already at max)
+  //   • iceBody    → heal 1/16 in hail
+  //   • rainDish   → heal 1/16 in rain
+  //   • speedBoost → +1 spe stage (cap at +6)
+  //   • lifeOrb    → 10% max HP recoil (only if we saw a dealt-damage tick
+  //                  recently; approximated by "player HP went down this tick")
+  function dispatchEndTurn(cloneId, playerHpDelta) {
+    if (!cloneId) return;
+    const state = __enemyCloneState[cloneId];
+    if (!state) return;
+    if (typeof wildPkmnHp === "undefined" || typeof wildPkmnHpMax === "undefined") return;
+    if (wildPkmnHp <= 0) return; // clone is dead, nothing to tick
+
+    // Weather-based ability healing (iceBody in hail, rainDish in rain).
+    // NOTE: Leftovers is INTENTIONALLY not dispatched here anymore — in
+    // Pokechill it reduces fatigue damage (not a heal), and our BST
+    // inflation (`hp: 1.20` in __ITEM_EFFECTS) already captures that effect
+    // as an effectively larger HP pool. Dispatching a canonical heal 1/16
+    // on top was double-counting and visibly different from how the player
+    // sees Leftovers work on their own team.
+    const heal16 = wildPkmnHpMax / 16;
+    const weather = (typeof saved !== "undefined" && saved && saved.weather) || "";
+    const weatherTimer = (typeof saved !== "undefined" && saved && saved.weatherTimer) || 0;
+    const hasIceBody  = state.ability === "iceBody"  || state.hiddenAbility === "iceBody";
+    const hasRainDish = state.ability === "rainDish" || state.hiddenAbility === "rainDish";
+    let healAmount = 0;
+    if (hasIceBody  && weatherTimer > 0 && weather === "hail")  healAmount = Math.max(healAmount, heal16);
+    if (hasRainDish && weatherTimer > 0 && weather === "rainy") healAmount = Math.max(healAmount, heal16);
+    if (healAmount > 0 && wildPkmnHp < wildPkmnHpMax) {
+      try {
+        wildPkmnHp = Math.min(wildPkmnHpMax, wildPkmnHp + healAmount);
+        if (typeof updateWildPkmn === "function") updateWildPkmn();
+      } catch (e) { /* ignore */ }
+    }
+
+    // speedBoost — +1 spe stage via wildBuffs. Cap at +2 since Pokechill
+    // only has speup1/speup2. Either slot can carry it.
+    const hasSpeedBoost = state.ability === "speedBoost" || state.hiddenAbility === "speedBoost";
+    if (hasSpeedBoost && typeof wildBuffs === "object") {
+      if (!wildBuffs.speup2) {
+        if (wildBuffs.speup1) { wildBuffs.speup1 = 0; wildBuffs.speup2 = 3; }
+        else wildBuffs.speup1 = 3;
+        if (typeof updateWildBuffs === "function") updateWildBuffs();
+      }
+    }
+
+    // Life Orb recoil — if player took damage last tick (we attacked), bleed 10%.
+    if (state.item === "lifeOrb" && playerHpDelta < 0) {
+      try {
+        wildPkmnHp = Math.max(0, wildPkmnHp - wildPkmnHpMax * 0.10);
+        if (typeof updateWildPkmn === "function") updateWildPkmn();
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  // ─── TICK LOOP — start/stop ──────────────────────────────────────────────
+  function startEnemyCloneTick() {
+    stopEnemyCloneTick();
+    __enemyCloneLastPlayerHp = __snapshotPlayerHp();
+    __enemyCloneLastEnemyHp  = (typeof wildPkmnHp !== "undefined") ? wildPkmnHp : null;
+    __enemyCloneTickTimer = setInterval(__enemyCloneTick, 500);
+  }
+  function stopEnemyCloneTick() {
+    if (__enemyCloneTickTimer) { clearInterval(__enemyCloneTickTimer); __enemyCloneTickTimer = null; }
+    __enemyCloneLastPlayerHp = null;
+    __enemyCloneLastEnemyHp  = null;
+  }
+  function __snapshotPlayerHp() {
+    try {
+      if (typeof team === "object" && typeof exploreActiveMember !== "undefined" && team[exploreActiveMember] && team[exploreActiveMember].pkmn) {
+        const id = team[exploreActiveMember].pkmn.id;
+        if (pkmn[id] && typeof pkmn[id].playerHp === "number") return pkmn[id].playerHp;
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function __enemyCloneTick() {
+    try {
+      const cid = saved && saved.currentPkmn;
+      if (!cid || !__enemyCloneState[cid]) { stopEnemyCloneTick(); return; }
+      const nowPlayerHp = __snapshotPlayerHp();
+      const nowEnemyHp  = (typeof wildPkmnHp !== "undefined") ? wildPkmnHp : null;
+      const playerDelta = (nowPlayerHp != null && __enemyCloneLastPlayerHp != null) ? (nowPlayerHp - __enemyCloneLastPlayerHp) : 0;
+      const enemyDelta  = (nowEnemyHp  != null && __enemyCloneLastEnemyHp  != null) ? (nowEnemyHp  - __enemyCloneLastEnemyHp)  : 0;
+      if (enemyDelta < 0) dispatchOnTakeDamage(cid, -enemyDelta);
+      dispatchEndTurn(cid, playerDelta);
+      __enemyCloneLastPlayerHp = nowPlayerHp;
+      __enemyCloneLastEnemyHp  = (typeof wildPkmnHp !== "undefined") ? wildPkmnHp : null;
+    } catch (e) { /* swallow — don't let the interval die */ }
+  }
+
+  // ─── INSTALL HOOKS ───────────────────────────────────────────────────────
+  // setWildPkmn wrap: after the vanilla spawn, if we're in a ZdC run, mint
+  // a clone and reassign saved.currentPkmn to it.
+  function installEnemyContextHook() {
+    if (typeof window.setWildPkmn !== "function") {
+      setTimeout(installEnemyContextHook, 150);
+      return;
+    }
+    if (window.__zdcEnemyContextHooked) return;
+    window.__zdcEnemyContextHooked = true;
+    const orig = window.setWildPkmn;
+    window.setWildPkmn = function () {
+      const res = orig.apply(this, arguments);
+      try {
+        if (typeof saved !== "object" || !saved) return res;
+        const inRunArea = saved.currentArea === RUN_AREA_ID
+                       || saved.currentAreaBuffer === RUN_AREA_ID;
+        if (!inRunArea) return res;
+        const run = saved.frontierExt && saved.frontierExt.activeRun;
+        if (!run) return res;
+        const facility = FACILITIES.find((f) => f.id === run.facilityId);
+        if (!facility) return res;
+        const realId = saved.currentPkmn;
+        if (!realId || !pkmn[realId]) return res;
+        // Don't re-clone an existing clone.
+        if (/^__zdcEnemy_/.test(realId)) return res;
+        const diff = computeRunDifficulty(run.round + 1, facility);
+        // Moveset for this enemy — read from the combat HUD area where
+        // explore.js populated it (randomMoves slot 1..4 → wild move
+        // dataset on explore-wild-sprite-data).
+        const moveIds = [];
+        try {
+          const hud = document.getElementById("explore-header-moves-wild");
+          if (hud) {
+            const entries = hud.querySelectorAll("[data-move]");
+            entries.forEach((el) => { const mv = el.dataset.move; if (mv) moveIds.push(mv); });
+          }
+        } catch (e) { /* ignore */ }
+        const cloneId = cloneEnemyForCombat(realId, {
+          diff,
+          facilityId: facility.id,
+          moveIds,
+          isBoss: !!(run.upcomingTrainer && run.upcomingTrainer.isBoss),
+        });
+        if (cloneId && cloneId !== realId) {
+          saved.currentPkmn = cloneId;
+          dispatchOnSwitchIn(cloneId);
+        }
+      } catch (e) { console.error("[frontier-ext][enemy-ctx] setWildPkmn wrap failed:", e); }
+      return res;
+    };
+  }
+
+  // leaveCombat wrap: destroy all clones + overlay + ticker. Runs BEFORE
+  // vanilla leaveCombat so any post-combat read lands on clean pkmn[].
+  function installEnemyContextLeaveHook() {
+    if (typeof window.leaveCombat !== "function") {
+      setTimeout(installEnemyContextLeaveHook, 200);
+      return;
+    }
+    if (window.__zdcEnemyContextLeaveHooked) return;
+    window.__zdcEnemyContextLeaveHooked = true;
+    const origLeave = window.leaveCombat;
+    window.leaveCombat = function () {
+      try { destroyAllEnemyClones(); } catch (e) { /* ignore */ }
+      return origLeave.apply(this, arguments);
+    };
+  }
+
+  // moveBuff wrap: intercept status being applied to the enemy (target=="wild"
+  // branch). Fires lumBerry consumption.
+  function installEnemyContextMoveBuffHook() {
+    if (typeof window.moveBuff !== "function") {
+      setTimeout(installEnemyContextMoveBuffHook, 200);
+      return;
+    }
+    if (window.__zdcEnemyContextMoveBuffHooked) return;
+    window.__zdcEnemyContextMoveBuffHooked = true;
+    const origMoveBuff = window.moveBuff;
+    window.moveBuff = function (target, buff, mod, turnOverride) {
+      const res = origMoveBuff.apply(this, arguments);
+      try {
+        if (target !== "wild") return res;
+        if (!buff || !/burn|freeze|confused|paralysis|poisoned|sleep/.test(buff)) return res;
+        const cid = saved && saved.currentPkmn;
+        if (!cid || !__enemyCloneState[cid]) return res;
+        const state = __enemyCloneState[cid];
+        // ── Lum Berry: clears any major status the moment it lands. ─────
+        if (state.item === "lumBerry" && !state.lumBerryConsumed && item.lumBerry) {
+          // Cure whatever status just landed.
+          if (typeof wildBuffs === "object") {
+            ["burn","freeze","confused","paralysis","poisoned","sleep"].forEach((b) => { if (wildBuffs[b]) wildBuffs[b] = 0; });
+            if (typeof updateWildBuffs === "function") updateWildBuffs();
+          }
+          state.lumBerryConsumed = true;
+          state.item = null;
+        }
+        // ── Hydratation: in rain, major statuses are cured on inflict. ──
+        // Same player-side logic as teams.js / explore.js — we keep it 1:1
+        // so enemies holding it feel identical to rentals/allies that do.
+        if ((state.ability === "hydratation" || state.hiddenAbility === "hydratation")
+            && typeof weatherActive !== "undefined" && weatherActive === "rainy") {
+          if (typeof wildBuffs === "object") {
+            ["burn","freeze","paralysis","poisoned","sleep"].forEach((b) => { if (wildBuffs[b]) wildBuffs[b] = 0; });
+            if (typeof updateWildBuffs === "function") updateWildBuffs();
+          }
+        }
+        // ── Guts: first burn/poison/paralysis tick triggers +atk (1.5x
+        // atk already baked via BST inflation once fired; here we flip
+        // the state flag so the BST re-apply picks it up). ──────────────
+        if ((state.ability === "guts" || state.hiddenAbility === "guts") && !state.gutsApplied
+            && /burn|poisoned|paralysis/.test(buff)) {
+          state.gutsApplied = true;
+          // Re-apply BST inflation path so the atk bump lands on the clone's
+          // in-memory stats (cannot trust the engine to do it for us).
+          try {
+            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cloneDict) {
+              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
+              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
+              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
+            }
+          } catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* swallow */ }
+      return res;
+    };
+  }
+
+  // ─── LEGACY SHIMS — keep old callsites working ───────────────────────────
+  // The old applyEnemyRuntimeStats was a no-op-in-practice that polluted the
+  // player's species dict. We keep the name exported so every existing call
+  // still type-checks / doesn't throw, but the body is empty — clone-based
+  // replacement runs from the setWildPkmn wrap instead.
+  function applyEnemyRuntimeStats(/* run, trainer, diff */) {
+    // Intentionally empty — see enemy context clone system above. Kept as
+    // a no-op shim so the existing buildEphemeralRunArea call (~10137) and
+    // the public export (~11561) continue to resolve.
+  }
+  // The old restoreEnemyRuntimeStats had 5 cleanup callsites (leaveCombat
+  // wrap, exitCombat wrap, forfeitOnBoot, rest action, abandon action). We
+  // re-point them at destroyAllEnemyClones so cleanup still fires on every
+  // run-end path — plus the new clone system adds its own hook in
+  // installEnemyContextLeaveHook.
+  function restoreEnemyRuntimeStats(/* run */) {
+    try { destroyAllEnemyClones(); } catch (e) { /* ignore */ }
+  }
+
+  // ─── INIT — run at module load so dispatch pools are ready ───────────────
+  // These are idempotent; re-invoking is safe.
+  __initBannedEnemyMoves();
+  __initItemPool();
+  __initAbilityPool();
+
+  // ════════════════════════════════════════════════════════════════════════
+  // END ENEMY CONTEXT
+  // ════════════════════════════════════════════════════════════════════════
 
   // Switch the active previewTeam slot to the private Factory slot so
   // the combat engine uses rentals. The user's current slot is stashed
@@ -7330,6 +9048,14 @@
     // Overwrite slot1 (highest-priority AI choice in Pokechill's pick
     // order) so the wild opens with the annoyance.
     moveset[0] = chosen;
+
+    // Enemy-context: re-run the banned-move filter in-place — if the bias
+    // replaced slot 0 with (e.g.) a status move, the rest of the set might
+    // still contain explosion/uTurn from the upstream pickMovesetFor call.
+    // filterBannedEnemyMoves returns a new array; we copy its slots back
+    // into the caller's moveset to preserve the mutate-in-place contract.
+    const cleaned = filterBannedEnemyMoves(moveset.slice(), speciesId);
+    for (let i = 0; i < moveset.length; i++) moveset[i] = cleaned[i];
   }
 
   // Canonical Pyramid: no held items allowed at registration. Instead
@@ -9686,13 +11412,27 @@
     const team = {};
     // Parallel array: simulated natures per slot so the Palace rule can look
     // up the active opponent's nature by slot index at combat time.
+    // Tier gate (user rule): natures only apply on Palace (always) OR on
+    // post-Gold / boss fights for any other facility. Pre-Silver / Silver
+    // non-Palace fights leave naturesBySlot empty → the engine picks moves
+    // neutrally instead of with a stat-profile bias.
+    const isPalaceFacility = facility && facility.id === "frontierPalaceSecret";
+    const isBossForBuild   = !!(trainer && trainer.isBoss) || (typeof isMiniBossBattle === "function" && isMiniBossBattle(run, facility));
+    // Run-based post-gold check — diff.round tells us the upcoming combat's
+    // round number; tier unlocks happen as the player climbs THIS run, not
+    // based on lifetime symbol achievements.
+    const postGoldForBuild = (typeof isFacilityPostGold === "function")
+      && isFacilityPostGold(facility && facility.id, diff && diff.round);
+    const applyNatureBuild = isPalaceFacility || postGoldForBuild || isBossForBuild;
     const naturesBySlot = {};
     effectiveTeam.forEach((slot, i) => {
       const slotN = i + 1;
       if (!pkmn[slot.id]) return;
       team["slot" + slotN] = pkmn[slot.id];
       team["slot" + slotN + "Moves"] = slot.moves;
-      naturesBySlot[slotN] = slot.nature || simulateNatureFor(slot.id) || "";
+      naturesBySlot[slotN] = applyNatureBuild
+        ? (slot.nature || simulateNatureFor(slot.id) || "")
+        : "";
     });
 
     // Fresh arena state — every new combat starts judge-eligible from 0.
@@ -9794,6 +11534,48 @@
   // Canonical Gen 3 Emerald: both sides see each other's 3-mon roster,
   // then each side secretly picks 2 to send into battle.
   const DOME_ACTIVE_SIZE = 2;
+
+  // True when all 3 Pokémon in the active preview team are at level 100.
+  // Missing slots count as "not 100" — the size gate (currentPreviewTeamSize)
+  // runs first anyway, so this only matters once the 3 slots are filled.
+  // Factory is exempt (rentals replace the player's team entirely).
+  function allPreviewMonsAreLvl100() {
+    try {
+      const pt = saved.previewTeams[saved.currentPreviewTeam];
+      if (!pt) return false;
+      for (const slot of ["slot1", "slot2", "slot3"]) {
+        if (!pt[slot] || !pt[slot].pkmn) return false;
+        // In Pokechill's preview shape, pt[slot].pkmn is a STRING id (see
+        // teams.js:132 `pkmn[currentTeam[i].pkmn].level`). Not an object
+        // with .id — that shape is used by the active combat `team[i]`.
+        const id = (typeof pt[slot].pkmn === "string") ? pt[slot].pkmn
+                 : (pt[slot].pkmn && pt[slot].pkmn.id);
+        if (!id || typeof pkmn === "undefined" || !pkmn[id]) return false;
+        if ((pkmn[id].level | 0) < 100) return false;
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  // Hard gate modal — ZdC canonical Gen 3 rule: bring 3 level-100 mons. No
+  // "will be very hard otherwise" warning, the gate is strict: entry refused.
+  function showTeamLevelError(facility) {
+    const lang = window.gameLang === "fr" ? "fr" : "en";
+    const title = lang === "fr" ? "Niveau d'équipe invalide" : "Invalid team level";
+    const msg = lang === "fr"
+      ? "Cette ZdC applique les règles Gen 3 d'Émeraude : tes trois Pokémon doivent être niveau 100. Fais-les monter au niveau max avant de lancer un combat."
+      : "This ZdC facility follows the Gen 3 Emerald rules: all three of your Pokémon must be level 100. Bring them to max level before starting a fight.";
+    const top = document.getElementById("tooltipTop");
+    const titleEl = document.getElementById("tooltipTitle");
+    const mid = document.getElementById("tooltipMid");
+    const bottom = document.getElementById("tooltipBottom");
+    if (top) top.style.display = "none";
+    if (titleEl) { titleEl.style.display = "block"; titleEl.innerHTML = "⚠️ " + title; }
+    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div style="padding:0.6rem 0.8rem;">${msg}</div>`; }
+    if (bottom) bottom.style.display = "none";
+    if (typeof openTooltip === "function") openTooltip();
+  }
 
   function showTeamSizeError(facility) {
     const lang = "en";
@@ -10639,6 +12421,10 @@
         const vsListing = document.getElementById("vs-listing");
         if (frontierListing) frontierListing.style.display = "";
         if (vsListing) vsListing.style.display = "none";
+        // NOTE: don't wipe the header backgroundImage here. Vanilla
+        // updateFrontier already set it to tower.png (explore.js:7358) by
+        // the time origUpdateFrontier returned — our zdc.png inline override
+        // (set only inside updateHoennBF) has been replaced naturally.
       } catch (e) {
         console.error("[frontier-ext] updateFrontier hook failed:", e);
       }
@@ -10664,6 +12450,10 @@
         const vsListing = document.getElementById("vs-listing");
         if (vsListing) vsListing.style.display = "";
         if (frontierListing) frontierListing.style.display = "none";
+        // NOTE: don't wipe the header backgroundImage here. Vanilla updateVS
+        // already set it to gym.png (explore.js:6828) by the time
+        // origUpdateVS returned — our zdc.png inline override (set only
+        // inside updateHoennBF) has been replaced naturally.
       } catch (e) {
         console.error("[frontier-ext] updateVS hook failed:", e);
       }
@@ -10727,6 +12517,13 @@
         // a rotation timer, but our section has no rotations).
         const header = document.getElementById("vs-menu-header");
         if (header) {
+          // Override the vanilla forest.png background with the ZdC-specific
+          // one while we're on the Hoenn tab. When the player switches back
+          // to Dresseurs / Battle Frontier, vanilla's own updateVS/
+          // updateFrontier re-sets the background via its own rendering,
+          // so no explicit reset is needed here. MENU ONLY — combat
+          // backgrounds remain per-facility.
+          header.style.backgroundImage = "url(img/bg/zdc.png)";
           const helpLabel = "Hoenn BF";
           // Header structure mirrors the vanilla VS Frontier one
           // (explore.js:7328+) so the existing `.header-help` CSS
@@ -10777,6 +12574,10 @@
     installHelpTooltip();
     installCombatHook();
     installEnemyIvHpHook();
+    // Enemy context — all 3 hooks enabled.
+    try { installEnemyContextHook();          } catch (e) { console.error("[frontier-ext] installEnemyContextHook failed:", e); }
+    try { installEnemyContextLeaveHook();     } catch (e) { console.error("[frontier-ext] installEnemyContextLeaveHook failed:", e); }
+    try { installEnemyContextMoveBuffHook();  } catch (e) { console.error("[frontier-ext] installEnemyContextMoveBuffHook failed:", e); }
     installExitPkmnTeamBlock();
     installExitRedirect();
     installVSLeakFilter();
@@ -11064,6 +12865,22 @@
     computeRunDifficulty,
     applyEnemyRuntimeStats,
     restoreEnemyRuntimeStats,
+    // ── Enemy context (shadow clone system) — inspect in DevTools:
+    //   __frontierExt.cloneEnemyForCombat("charizard", { diff: __frontierExt.computeRunDifficulty(15, __frontierExt.FACILITIES[0]), facilityId: __frontierExt.FACILITIES[0].id, moveIds: ["flamethrower","dragonClaw","airSlash","roost"] })
+    cloneEnemyForCombat,
+    destroyEnemyClone,
+    destroyAllEnemyClones,
+    filterBannedEnemyMoves,
+    getMegaStonesForSpecies,
+    isFacilityPostGold,
+    pickAbilityForClone,
+    pickItemForClone,
+    applyBstInflation,
+    applyItemBstInflation,
+    BANNED_ENEMY_MOVES,
+    get ITEM_POOL_STANDARD() { return __ITEM_POOL_STANDARD.slice(); },
+    get ACTIVE_ABILITY_IDS() { return __ACTIVE_ABILITY_IDS.slice(); },
+    get activeEnemyCloneIds() { return Array.from(__enemyCloneIds); },
     pickMovesetFor,
     simulateNatureFor,
     buildMoveCategories,

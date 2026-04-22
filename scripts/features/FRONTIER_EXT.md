@@ -307,6 +307,163 @@ effects, it delegates to the game's native item logic.
 
 ---
 
+## Enemy context clone system
+
+The Frontier runs bosses / rematches / post-Silver rentals with **items,
+hidden abilities, natures, and BST inflation** that the vanilla combat
+engine does not read off of enemy Pokémon. Rather than patching core
+combat, the overlay creates a **shadow clone** of the species entry at
+combat launch, mutates the clone, and swaps `saved.currentPkmn` to point
+at it. On run end / leave combat / defeat we destroy the clone and the
+real `pkmn[id]` species entry is untouched.
+
+### Clone registry
+
+```
+pkmn["__zdcEnemy_<realId>_<uid>"] = {
+  ...origSpecies,                 // shallow own-copy (keeps function/object refs intact)
+  bst:   { ...orig.bst },         // own-copy: we inflate
+  type:  [ ...orig.type ],        // own-copy: mega transform may swap
+  id:    "__zdcEnemy_...",
+  shiny?, ability?, hiddenAbility?, nature?, item?
+}
+
+__enemyCloneState[cloneId] = {
+  realId, uid,
+  item, ability, hiddenAbility, nature, shiny, megaFormId,
+  focusSashConsumed, weaknessPolicyConsumed,
+  salacBerryConsumed, sitrusBerryConsumed, lumBerryConsumed,
+  lifeOrbRecoilPending,
+  speedBoostStages,
+  gutsApplied,
+}
+```
+
+### Dispatcher surfaces (what we can drive)
+
+| When | Dispatcher | Covers |
+|---|---|---|
+| Switch-in (clone takes field) | `dispatchOnSwitchIn` → `__fireAbilityOnSwitchIn` | intimidate, dauntingLook, drought, drizzle, sandStream, snowWarning, somberField, electricSurge, grassySurge, mistySurge, flameOrb / toxicOrb pre-burn |
+| `moveBuff(target="wild", buff)` wrap | `installEnemyContextMoveBuffHook` | lumBerry status clear, hydratation status cure in rain, guts `.gutsApplied` flip → re-run BST inflation for +1.5× atk |
+| End-turn tick (~500 ms poll) | `dispatchEndTurn` | iceBody / rainDish heal under matching weather, speedBoost +1 spe stage, lifeOrb 10 % max-HP recoil on landed hit |
+| On enemy HP decrease | `dispatchOnTakeDamage` | weaknessPolicy +2 atk +2 satk on >25 % max HP hit (approximated super-effective) |
+| Pre-battle (BST inflation path) | `applyItemBstInflation` | all damage-calc abilities + all item %-damage mods (see below) |
+
+### Damage-calc abilities (BST inflation, no engine hook)
+
+Pokechill's damage formula lives behind a single `exploreCombatWild`
+call — we can't wedge a pre-damage hook onto enemy-only reads. Instead
+we pre-inflate `clone.bst.atk/satk/def/sdef/spe/hp` at clone creation
+time so the inline formula reads the boosted value transparently.
+
+| Ability | Inflation | Gate |
+|---|---|---|
+| hugePower | atk ×1.50 | unconditional |
+| toughClaws | atk ×1.10 | any contact-proxy move |
+| ironFist | atk ×1.12 | any punch/fist-named move |
+| strongJaw | atk ×1.12 | any bite/crunch/fang-named move |
+| sheerForce | atk&satk ×1.30 | ≥2 moves with `hitEffect`/`bonusBuff`/`bonusDebuff` |
+| technician | atk&satk ×1.20 | ≥2 moves with base power ≤60 |
+| adaptability | atk&satk ×1.15 | ≥3 STAB moves (conservative vs. canonical 2.0×) |
+| skillLink | atk&satk ×1.18 | any multihit move (canonical `move[x].multihit: [min,max]`) |
+| aerilate / pixilate / galvanize / glaciate / pyrolate / terralate / toxilate / hydrolate / ferrilate / chrysilate / verdify / gloomilate / espilate / dragonMaw (Pokechill's 14 ate-family converters) | atk&satk ×1.25 | any normal-type attacking move |
+| guts | atk ×1.50 | wildBuffs.burn / poisoned / paralysis set (re-runs inflation via moveBuff hook when status lands mid-combat) |
+| gorillaTactics | atk ×1.30 | ≥2 physical moves (we skip the move-lock — engine doesn't enforce on enemies) |
+| solarPower | satk ×1.20 | `weatherActive === "sunny"` + any special fire move (skipping the canonical -1/8 HP drain) |
+| sandForce | atk ×1.10 | any rock/ground/steel attacking move |
+| chlorophyll / swiftSwim / sandRush / slushRush / moltShed | bst.spe +3 | `weatherActive === "sunny"/"rainy"/"sandstorm"/"hail"/"foggy"` respectively |
+| unburden | bst.spe +2 | flat (many enemy items don't deplete mid-fight; conservative proxy) |
+| sandVeil / snowCloak | def&sdef ×1.08 | matching weather (evasion can't be dispatched cleanly; modeled as "harder to finish off") |
+
+### Cosmetic abilities we can't dispatch
+
+These Pokechill abilities exist in the dictionary but **cannot be made
+to do anything on the enemy side without rewriting the combat engine**.
+Per the design rule **"1:1 Pokechill — if we can't make it work, don't
+assign it"**, every ability below was stripped from `__ABILITY_SCORERS`.
+If a species' default / hidden ability falls into this list, the clone
+is created **with no ability pill on the info row** — that's intentional;
+fake ornaments are worse than empty slots.
+
+| Ability | Why we can't dispatch it on enemy |
+|---|---|
+| **multiscale** | Needs a "damage taken at full HP" hook on the enemy side. Pokechill's damage application (`hpChange(target, -amount)`) applies damage to the target with no conditional pre-damage hook callable from our overlay. |
+| **filter / solidRock / prismArmor** | Same shape: "reduce super-effective damage taken by 0.75". No enemy-side damage-taken multiplier hook. |
+| **thickFat** | "Halve atk/satk of fire and ice moves used against holder." No move-type-conditional damage modifier hook for incoming moves on the wild slot. |
+| **levitate** | "Immune to ground moves." Vanilla checks `team[slot].ability === ability.levitate.id` — the check is player-only and hard-coded to `team[...]`, not `wildPkmn`. |
+| **static / flameBody / poisonPoint / cursedBody / effectSpore / stench** | "On contact taken, X% chance inflict Y." Requires us to detect that a specific move HIT the clone and was contact. The `moveBuff` wrap catches status that lands on the wild slot, but not the inverse (status to inflict on the attacker). |
+| **contrary** | Flip sign of every stat-change buff landed on the clone. `moveBuff(target="wild", "atkdown1", …)` fires before our wrap returns the real buff; we'd need to replace the buff string before the base function applies it, but we chose to keep the hook read-only (safer). |
+| **simple** | Double every stat-change magnitude. Same shape as contrary — requires rewriting the buff string in-flight. |
+| **moody** | +2 random / -1 random stat per turn. End-turn tick can fire buffs, but `wildBuffs.atkup2` etc. are player-facing display buffs — pushing random stages on them doesn't reflect in the engine's damage read. |
+| **protean / libero** | Change clone's type to the move's type right before using it. Requires a "before move use" hook on the enemy; vanilla's `exploreCombatWild` picks a move and immediately resolves it. |
+| **moxie / chillingNeigh / grimNeigh / asOne** | +1 atk/satk stage after a KO. We detect the player Pokémon dying via `team[slot].pkmn.playerHp <= 0`, but there's no hook point between the KO and the next turn where the clone hasn't already picked its next move. |
+| **strategist** | Reserved for triple-kill signal in Arena — not dispatchable as an enemy ability without a full move-picker rewrite. |
+| **parentalBond** | Doubles every single-target move. We can't intercept the damage event to run it twice. |
+| **sereneGrace** | Doubles secondary-effect chances. Those chances are rolled inline in `move.hitEffect?.()`, not through a hookable pipeline. |
+| **supremeOverlord** | Scales damage by count of fainted teammates. Solo enemies by default (only Dome-style has a "team" context), and the fainted-count read is player-side. |
+| **wonderGuard** | Immune unless super-effective. Same shape as levitate but over every type — needs an enemy-side type-effectiveness gate. |
+| **imposter** | Transform into player's active on switch-in. We'd have to rebuild the clone mid-combat with the player's species data — possible in theory, skipped for Phase 1 because it would conflict with the preview team slot and mega-transform path. |
+| **powerOfAlchemy / trace / receiver** | Copy an opponent's ability on switch-in. We'd have to re-run `pickAbilityForClone` against the player's ability pool, but the copy target is the *ally* in doubles (Power of Alchemy) — Pokechill has no doubles format, so the ability is a no-op on the player side too. Parked. |
+| **fullMetalBody / clearBody / whiteSmoke / hyperCutter** | Prevent stat-drop from opponent. Player-side abilities already read these correctly (`team[...].ability`); for enemies we'd need to intercept the moveBuff call and cancel the write — our wrap is read-only by design. |
+| **naturalCure** | Cure status on switch-out. Solo wild enemies don't switch out, so this is inert. |
+| **goodAsGold** | Immune to all status moves. Status-move detection exists (`move[x].power === 0`) but we'd need an engine-side "refuse this buff" gate that doesn't exist for the wild slot. |
+| **magicBounce / magicGuard** | Reflect / ignore indirect damage. Same shape as filter — no incoming-damage hook. |
+| **regenerator** | +33 % HP on switch-out. Solo wilds don't switch, inert. |
+| **pressure** | Extra PP drain on moves targeting holder. Pokechill doesn't simulate PP at all, inert. |
+
+**If Phase 2 ever lands** (a proper `exploreCombatPlayer` / damage pipe
+wrap that the overlay can hook), most of the defensive/reactive
+abilities above become dispatchable and will get added back to the
+scorer table. Until then, they're intentionally absent so the player
+never sees an ability pill for a non-functional ability.
+
+### Ability gate matrix
+
+The clone gets its abilities from `pickAbilityForClone(realId, moves,
+clone, diff, abilityGate)` where `abilityGate` is one of:
+
+| Gate | Set by | Normal slot | Hidden slot |
+|---|---|---|---|
+| `"default-only"` | pre-Silver / Silver rounds | Scored pick from active table (excluding species hidden id) | `null` — never unlocked |
+| `"hidden-allowed"` | post-Gold (ramp via `diff.hiddenAbilityChance`, 0.25 → 0.75 from Silver to Gold round) | Same as above | `hiddenId` if `hasScorer(hiddenId)` and `Math.random() < rate` |
+| `"hidden-forced"` | Boss encounters (`isEnemyBoss()` — brain OR round-guardian 7/7) | Same as above | `hiddenId` if `hasScorer(hiddenId)` — unconditional |
+
+A clone may end up with **zero abilities** if neither its default nor
+any type-matching scored candidate lives in the active table. That's a
+deliberate outcome — see "Cosmetic abilities we can't dispatch" above.
+
+### Item gate matrix
+
+`pickItemForClone` draws from a tiered pool based on `diff.itemPoolTier`:
+
+| Tier | Pool contents |
+|---|---|
+| `null` | No item at all (pre-Silver) |
+| `"basic"` | leftovers, orbs (flame/toxic), quickClaw, mentalHerb, powerHerb, clearAmulet, heavyDutyBoots, all 18 type boosters |
+| `"mid"` (adds) | lifeOrb, choiceBand, choiceSpecs, lightClay, laggingTail, metronome, luckyPunch, loadedDice |
+| `"full"` (adds) | weaknessPolicy, assaultVest, eviolite, all 18 gems, mega stones (probabilistic via `getMegaStonesForSpecies`) |
+
+Ability-item synergies fire probabilistically **before** the generic
+roll, so you see thematic combos (Guts + Flame Orb, Iron Fist + Lucky
+Punch, Poison Heal + Toxic Orb) without the pool degenerating to the
+same combo every time.
+
+### Nature gate
+
+| Facility / tier | Nature applied? |
+|---|---|
+| Palace (any round) | **Always** — the facility's gimmick (`autoMoveByNature`) collapses to neutral without one |
+| Boss (any facility) | **Always** |
+| Other facility, pre-Silver | Never |
+| Other facility, Silver → Gold | Probabilistic (`diff.natureChance` ramp 0.30 → 1.00) |
+| Other facility, post-Gold | Always |
+
+Nature is picked by `simulateNatureFor(realId)` — a stat-profile-aware
+helper (adamant/modest/jolly/bold/quiet/relaxed) reused from the
+trainer generator for player-facing consistency.
+
+---
+
 ## Testing
 
 Playwright probes (not shipped in this patch — available in the
