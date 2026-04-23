@@ -5612,12 +5612,22 @@
       if (!box) return false;
       return !!box.querySelector('[class*="frontier-ext-"]');
     };
+    // Phase D — explicit bypass for dismissible error popups. The
+    // team-size / tied-team-lost modals are informational — they MUST
+    // stay dismissible even during an active run, or the player gets
+    // trapped on them with no way out. showTeamSizeError /
+    // showTiedTeamLostModal plant a `.zdc-error-modal-bypass` element so
+    // this check can opt them out of the lock.
+    const isDismissibleErrorModal = () => {
+      const box = document.getElementById("tooltipBox");
+      return box ? !!box.querySelector(".zdc-error-modal-bypass") : false;
+    };
     const apply = () => {
       try {
         const run = saved && saved.frontierExt && saved.frontierExt.activeRun;
         const bg = document.getElementById("tooltipBackground");
         const box = document.getElementById("tooltipBox");
-        if (run && isFrontierTooltip()) {
+        if (run && isFrontierTooltip() && !isDismissibleErrorModal()) {
           if (bg)  bg.classList.add(lockClass);
           if (box) box.classList.add(lockClass);
           ensureBlocker();
@@ -12542,6 +12552,41 @@
       return false;
     }
   }
+  // Phase D shared force-close for the three team-validation error popups.
+  // Pokechill's closeTooltip pops ONE tooltipStack entry and restores the
+  // previous modal — which for us is typically the locked simulated-fight
+  // or facility-preview that triggered the error. Restoring it pops the
+  // player right back into the locked state they just tried to exit.
+  // Empty the whole stack + hide the backdrop directly so Close actually
+  // gets the player back to the map. The active run is NOT touched — if
+  // the player wants to continue, they still need to fix the team.
+  function zdcForceCloseErrorModal() {
+    try {
+      if (typeof tooltipStack !== "undefined" && Array.isArray(tooltipStack)) {
+        tooltipStack.length = 0;
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      const bg = document.getElementById("tooltipBackground");
+      const box = document.getElementById("tooltipBox");
+      if (bg)  bg.classList.remove("frontier-ext-run-lock-open");
+      if (box) box.classList.remove("frontier-ext-run-lock-open");
+      const blocker = document.getElementById("prevent-tooltip-exit");
+      if (blocker && blocker.hasAttribute("data-frontier-ext-blocker")) blocker.remove();
+    } catch (e) { /* ignore */ }
+    try { closeTooltip(); } catch (e) { /* ignore */ }
+    setTimeout(() => {
+      try {
+        const bg = document.getElementById("tooltipBackground");
+        if (bg && bg.style.display !== "none") bg.style.display = "none";
+        ["tooltipTop", "tooltipTitle", "tooltipMid", "tooltipBottom"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = "";
+        });
+      } catch (e) { /* ignore */ }
+    }, 250);
+  }
+
   // Hard gate modal — ZdC canonical Gen 3 rule: bring 3 level-100 mons. No
   // "will be very hard otherwise" warning, the gate is strict: entry refused.
   function showTeamLevelError(facility) {
@@ -12550,30 +12595,53 @@
     const msg = lang === "fr"
       ? "Cette ZdC applique les règles Gen 3 d'Émeraude : tes trois Pokémon doivent être niveau 100. Fais-les monter au niveau max avant de lancer un combat."
       : "This ZdC facility follows the Gen 3 Emerald rules: all three of your Pokémon must be level 100. Bring them to max level before starting a fight.";
+    const closeLabel = lang === "fr" ? "Fermer" : "Close";
     const top = document.getElementById("tooltipTop");
     const titleEl = document.getElementById("tooltipTitle");
     const mid = document.getElementById("tooltipMid");
     const bottom = document.getElementById("tooltipBottom");
-    if (top) top.style.display = "none";
+    // Phase D fix — same lock-trap as showTeamSizeError: clear panels +
+    // bypass marker + explicit Close button so the popup stays dismissible.
+    if (top) { top.style.display = "none"; top.innerHTML = ""; }
     if (titleEl) { titleEl.style.display = "block"; titleEl.innerHTML = "⚠️ " + title; }
-    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div style="padding:0.6rem 0.8rem;">${msg}</div>`; }
-    if (bottom) bottom.style.display = "none";
+    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div class="zdc-error-modal-bypass" style="padding:0.6rem 0.8rem;">${msg}</div>`; }
+    if (bottom) {
+      bottom.style.display = "block";
+      bottom.innerHTML = `<div style="padding:0.6rem 0.8rem 0.8rem;text-align:center;"><button type="button" data-zdc-close-error style="background:#3a2a1a;color:#ffd17a;border:1px solid rgba(255,200,90,0.55);padding:0.45rem 1.6rem;border-radius:0.3rem;cursor:pointer;font-weight:bold;font-size:0.95rem;letter-spacing:0.02em;box-shadow:0 1px 2px rgba(0,0,0,0.35);">${closeLabel}</button></div>`;
+      const btn = bottom.querySelector("[data-zdc-close-error]");
+      if (btn) btn.addEventListener("click", zdcForceCloseErrorModal);
+    }
     if (typeof openTooltip === "function") openTooltip();
   }
 
   function showTeamSizeError(facility) {
-    const lang = "en";
     const expected = expectedTeamSize(facility);
     const title = "Invalid team size";
     const msg = `This facility uses Gen 3 rules: exactly ${expected} Pokémon per team. Adjust your team via the editor before starting a fight.`;
+    const closeLabel = "Close";
     const top = document.getElementById("tooltipTop");
     const titleEl = document.getElementById("tooltipTitle");
     const mid = document.getElementById("tooltipMid");
     const bottom = document.getElementById("tooltipBottom");
-    if (top) top.style.display = "none";
+    // Phase D user-reported bug — "continuing a run with invalid team
+    // locks the player on this popup". The run-lock hook's detector
+    // scanned the WHOLE tooltipBox for any frontier-ext-* class, and
+    // leftover facility-preview content in tooltipTop/tooltipBottom
+    // (just `display:none`, still in the DOM) kept the lock alive:
+    // × hidden, Escape blocked, backdrop-click blocked. Starting a
+    // fresh run didn't reproduce because activeRun was null → lock
+    // bypassed. Fix: clear the panels entirely + plant a
+    // `.zdc-error-modal-bypass` marker the lock hook opts out on +
+    // explicit Close button as secondary escape.
+    if (top) { top.style.display = "none"; top.innerHTML = ""; }
     if (titleEl) { titleEl.style.display = "block"; titleEl.innerHTML = "⚠️ " + title; }
-    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div style="padding:0.6rem 0.8rem;">${msg}</div>`; }
-    if (bottom) bottom.style.display = "none";
+    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div class="zdc-error-modal-bypass" style="padding:0.6rem 0.8rem;">${msg}</div>`; }
+    if (bottom) {
+      bottom.style.display = "block";
+      bottom.innerHTML = `<div style="padding:0.6rem 0.8rem 0.8rem;text-align:center;"><button type="button" data-zdc-close-error style="background:#3a2a1a;color:#ffd17a;border:1px solid rgba(255,200,90,0.55);padding:0.45rem 1.6rem;border-radius:0.3rem;cursor:pointer;font-weight:bold;font-size:0.95rem;letter-spacing:0.02em;box-shadow:0 1px 2px rgba(0,0,0,0.35);">${closeLabel}</button></div>`;
+      const btn = bottom.querySelector("[data-zdc-close-error]");
+      if (btn) btn.addEventListener("click", zdcForceCloseErrorModal);
+    }
     if (typeof openTooltip === "function") openTooltip();
   }
 
@@ -12583,17 +12651,24 @@
   // kept reporting streaks that "vanished" mid-run (e.g. Tower locked at 16,
   // Palace at 11) without any message. Now they see the why.
   function showTiedTeamLostModal(facility) {
-    const lang = "en";
     const title = "Run ended";
     const msg = `The team tied to your run has fewer than 3 Pokémon — runs can't continue on an incomplete team. Start a new streak once your team is back to 3. <br><br><em>Tip: between rounds, keep the same team selection or refill to 3 before clicking "Continue".</em>`;
+    const closeLabel = "Close";
     const top = document.getElementById("tooltipTop");
     const titleEl = document.getElementById("tooltipTitle");
     const mid = document.getElementById("tooltipMid");
     const bottom = document.getElementById("tooltipBottom");
-    if (top) top.style.display = "none";
+    // Phase D bug fix — same lock-trap as showTeamSizeError: clear the
+    // panels + plant a bypass marker + explicit Close button.
+    if (top) { top.style.display = "none"; top.innerHTML = ""; }
     if (titleEl) { titleEl.style.display = "block"; titleEl.innerHTML = "⚠️ " + title; }
-    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div style="padding:0.7rem 0.9rem;line-height:1.35;">${msg}</div>`; }
-    if (bottom) bottom.style.display = "none";
+    if (mid) { mid.style.display = "block"; mid.innerHTML = `<div class="zdc-error-modal-bypass" style="padding:0.7rem 0.9rem;line-height:1.35;">${msg}</div>`; }
+    if (bottom) {
+      bottom.style.display = "block";
+      bottom.innerHTML = `<div style="padding:0.6rem 0.8rem 0.8rem;text-align:center;"><button type="button" data-zdc-close-error style="background:#3a2a1a;color:#ffd17a;border:1px solid rgba(255,200,90,0.55);padding:0.45rem 1.6rem;border-radius:0.3rem;cursor:pointer;font-weight:bold;font-size:0.95rem;letter-spacing:0.02em;box-shadow:0 1px 2px rgba(0,0,0,0.35);">${closeLabel}</button></div>`;
+      const btn = bottom.querySelector("[data-zdc-close-error]");
+      if (btn) btn.addEventListener("click", zdcForceCloseErrorModal);
+    }
     if (typeof openTooltip === "function") openTooltip();
   }
 
