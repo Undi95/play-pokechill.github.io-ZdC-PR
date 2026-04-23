@@ -5018,6 +5018,14 @@
   }
   function arenaResetState() {
     if (!saved || !saved.frontierExt || !saved.frontierExt.activeRun) return;
+    // Phase D audit fix (H1) — cancel any in-flight verdict / swap-freeze
+    // timers before replacing the state object. Prevents zombie callbacks
+    // from firing into the NEW combat's state.
+    try {
+      const prev = saved.frontierExt.activeRun.arenaState;
+      if (prev && prev.__judgeTimer) clearTimeout(prev.__judgeTimer);
+      if (prev && prev.__swapTimer)  clearTimeout(prev.__swapTimer);
+    } catch (e) { /* ignore */ }
     saved.frontierExt.activeRun.arenaState = {
       ...arenaFreshMatchupCounters(),
       lastPlayerSlot: null,
@@ -5025,6 +5033,8 @@
       matchupCount: 0,      // how many matchups opened in this combat
       judgesFired: 0,       // how many judge verdicts fired
       judgeFiring: false,   // true during the 3s verdict pause (freezes combat)
+      __judgeTimer: null,   // setTimeout handle for the 4.8s verdict callback
+      __swapTimer: null,    // setTimeout handle for the 3s post-swap freeze
     };
   }
   function arenaGetState() {
@@ -5330,7 +5340,14 @@
       }
     };
 
-    setTimeout(() => {
+    // Phase D audit fix (H1) — stash the timer handle on state so the
+    // combat-exit paths can clearTimeout it. Without this, a verdict
+    // triggered in matchup 3 could fire its wildPkmnHp=0 write 4.8 s
+    // later into an ALREADY-CLOSED combat.
+    if (state.__judgeTimer) { try { clearTimeout(state.__judgeTimer); } catch (e) {} }
+    state.__judgeTimer = setTimeout(() => {
+      state.__judgeTimer = null;
+      if (!isInArenaRun() || arenaGetState() !== state) return;
       try {
         if (playerWins) {
           // Enemy active only — write 0 to wild HP; engine's
@@ -5448,15 +5465,21 @@
         //   • Natural swap — enemy just died from regular combat (not
         //     from a verdict). judgeFiring is already false. Fire the
         //     usual 1s invincibility window via arenaSwapFreezing.
+        // Phase D audit fix (H1) — store the swap-freeze timer handle.
+        if (state.__swapTimer) { try { clearTimeout(state.__swapTimer); } catch (e) {} }
         if (state.judgeFiring) {
-          setTimeout(() => {
+          state.__swapTimer = setTimeout(() => {
+            state.__swapTimer = null;
             state.judgeFiring = false;
             state.arenaSwapFreezing = false;
           }, ARENA_SWAP_FREEZE_MS);
           state.arenaSwapFreezing = true;
         } else {
           state.arenaSwapFreezing = true;
-          setTimeout(() => { state.arenaSwapFreezing = false; }, ARENA_SWAP_FREEZE_MS);
+          state.__swapTimer = setTimeout(() => {
+            state.__swapTimer = null;
+            state.arenaSwapFreezing = false;
+          }, ARENA_SWAP_FREEZE_MS);
         }
       } catch (e) { console.error("[frontier-ext] arena swap freeze failed:", e); }
       return res;
@@ -7464,13 +7487,14 @@
       }
       if (hasSandType) clone.bst.atk *= 1.10;
     }
-    // ── Guts: +50% atk when a major status is on the clone. Reads
-    // wildBuffs at inflation time so flameOrb/toxicOrb combo trips on
-    // re-inflation (moveBuff hook calls us again once .gutsApplied flips).
-    if (abilityId === "guts" && typeof wildBuffs === "object"
-        && (wildBuffs.burn || wildBuffs.poisoned || wildBuffs.paralysis)) {
-      clone.bst.atk *= 1.5;
-    }
+    // ── Guts / marvelScale / livingShield branches were REMOVED from
+    // applyItemBstInflation in the Phase D audit (bug C1). They used to
+    // fire on re-inflation via __reInflateClone, which compounded every
+    // OTHER static branch (hugePower, item bumps, ate-family, etc.)
+    // because applyItemBstInflation is not idempotent — it unconditionally
+    // multiplies bst every call. Fixed by moving the status-triggered
+    // bumps into the moveBuff wrap, where they fire exactly once per
+    // combat on the state-flag flip.
     // ── Sand Veil / Snow Cloak: evasion boost under matching weather.
     // We can't model evasion cleanly, so approximate via a modest def/sdef
     // bump (+8%) which maps to "harder to finish off" on the player side.
@@ -7562,18 +7586,9 @@
       if (hasPhys) clone.bst.atk  *= 1.10;
       if (hasSpec) clone.bst.satk *= 1.10;
     }
-    // ── Marvel Scale / Living Shield: +50 % def/sdef when statused.
-    // Mirror guts pattern — check wildBuffs at inflation time; moveBuff
-    // hook re-runs inflation when a status lands mid-combat.
-    const hasStatus = typeof wildBuffs === "object"
-      && (wildBuffs.burn || wildBuffs.freeze || wildBuffs.paralysis
-          || wildBuffs.poisoned || wildBuffs.sleep);
-    if (abilityId === "marvelScale" && hasStatus) {
-      clone.bst.def *= 1.30;
-    }
-    if (abilityId === "livingShield" && hasStatus) {
-      clone.bst.sdef *= 1.30;
-    }
+    // ── Marvel Scale / Living Shield branches: removed from inflation
+    // per audit bug C1 (double-multiply). Dispatched inline in the
+    // moveBuff wrap now.
     // ── Pinch abilities (overgrow / blaze / swarm / torrent + the 12
     // Phase C additions). Conservative +10 % atk/satk on any matching-
     // type damaging move (uptime proxy for the canonical +30 % below
@@ -7859,6 +7874,41 @@
           if (megaSrc.hiddenAbility) clone.hiddenAbility = megaSrc.hiddenAbility;
           __enemyCloneState[cloneId].megaFormId = match.megaFormId;
           applyBstInflation(clone, ivVal, atkBoostActive);
+          // Phase D audit fix (M1) — re-apply nature stat bumps after the
+          // mega transform. clone.bst was just wholesale replaced with
+          // the mega form's base bst, which means the ±1 star nature
+          // adjustments we wrote earlier at nature-pick time are on the
+          // OLD bst object. Matches tooltip.js:1195-1215 mapping.
+          const natureId = __enemyCloneState[cloneId].nature;
+          if (natureId) switch (natureId) {
+            case "adamant":
+              clone.bst.atk  = (clone.bst.atk  || 0) + 1;
+              clone.bst.satk = Math.max(1, (clone.bst.satk || 0) - 1);
+              break;
+            case "modest":
+              clone.bst.atk  = Math.max(1, (clone.bst.atk  || 0) - 1);
+              clone.bst.satk = (clone.bst.satk || 0) + 1;
+              break;
+            case "quiet":
+              clone.bst.hp   = (clone.bst.hp   || 0) + 1;
+              clone.bst.atk  = Math.max(1, (clone.bst.atk  || 0) - 1);
+              clone.bst.satk = Math.max(1, (clone.bst.satk || 0) - 1);
+              break;
+            case "jolly":
+              clone.bst.def  = Math.max(1, (clone.bst.def  || 0) - 1);
+              clone.bst.sdef = Math.max(1, (clone.bst.sdef || 0) - 1);
+              clone.bst.spe  = (clone.bst.spe  || 0) + 1;
+              break;
+            case "bold":
+              clone.bst.hp   = Math.max(1, (clone.bst.hp   || 0) - 1);
+              clone.bst.def  = (clone.bst.def  || 0) + 1;
+              clone.bst.sdef = (clone.bst.sdef || 0) + 1;
+              break;
+            case "relaxed":
+              clone.bst.hp   = (clone.bst.hp   || 0) + 1;
+              clone.bst.spe  = Math.max(1, (clone.bst.spe  || 0) - 1);
+              break;
+          }
         }
       }
     }
@@ -7900,6 +7950,17 @@
     delete __enemyCloneState[cloneId];
   }
   function destroyAllEnemyClones() {
+    // Phase D audit fix (C2) — saved.currentPkmn was set to the cloneId
+    // at setWildPkmn time, but never restored. Null out the dangling
+    // reference so downstream reads get a consistent "no enemy" signal.
+    try {
+      if (typeof saved === "object" && saved && typeof saved.currentPkmn === "string"
+          && /^__zdcEnemy_/.test(saved.currentPkmn)) {
+        const cid = saved.currentPkmn;
+        const st = __enemyCloneState[cid];
+        saved.currentPkmn = (st && st.prevCurrentPkmn) || (st && st.realId) || null;
+      }
+    } catch (e) { /* ignore */ }
     // Drop every cloneId we know about, both in-memory and in the save
     // registry. Idempotent — safe to call from many cleanup paths.
     for (const id of Array.from(__enemyCloneIds)) destroyEnemyClone(id);
@@ -8125,22 +8186,28 @@
       __fireAbilityOnSwitchIn(state.hiddenAbility); // dual — fires only if unlocked
     } catch (e) { console.error("[frontier-ext][enemy-ctx] switch-in dispatch failed:", e); }
 
-    // Phase B — enemy-held weather/terrain rock/seed. Vanilla changeWeather
-    // reads team[activeMember].item to bump `saved.weatherTimer`, but the
-    // enemy's item is never visible to that path. Mirror the bump here so
-    // the clone's heatRock / dampRock / etc. actually pays off when its
-    // own ability sets the matching weather. Safe no-op if the clone's
-    // ability didn't set a weather, or the rock doesn't match.
+    // Phase B — enemy-held weather/terrain rock/seed.
+    // Phase D audit fix (H2) — gate on the clone's switch-in ability
+    // ACTUALLY being the matching weather setter. Previously any heatRock
+    // holder extended ANY ongoing sunny state, including weather the
+    // PLAYER had just set.
     try {
       if (typeof saved !== "undefined" && saved && saved.weather) {
-        const ROCK_WEATHER_MATCH = {
-          heatRock: "sunny", dampRock: "rainy", smoothRock: "sandstorm", icyRock: "hail",
-          foggySeed: "foggy",
-          electricSeed: "electricTerrain", grassySeed: "grassyTerrain", mistySeed: "mistyTerrain",
+        const ROCK_SETTER = {
+          heatRock:     { weather: "sunny",           setter: "drought"       },
+          dampRock:     { weather: "rainy",           setter: "drizzle"       },
+          smoothRock:   { weather: "sandstorm",       setter: "sandStream"    },
+          icyRock:      { weather: "hail",            setter: "snowWarning"   },
+          foggySeed:    { weather: "foggy",           setter: "somberField"   },
+          electricSeed: { weather: "electricTerrain", setter: "electricSurge" },
+          grassySeed:   { weather: "grassyTerrain",   setter: "grassySurge"   },
+          mistySeed:    { weather: "mistyTerrain",    setter: "mistySurge"    },
         };
-        const expected = ROCK_WEATHER_MATCH[state.item];
-        if (expected && saved.weather === expected && item[state.item]
-            && typeof item[state.item].power === "function") {
+        const match = ROCK_SETTER[state.item];
+        const hasSetter = match
+          && (state.ability === match.setter || state.hiddenAbility === match.setter);
+        if (match && hasSetter && saved.weather === match.weather
+            && item[state.item] && typeof item[state.item].power === "function") {
           saved.weatherTimer   = (saved.weatherTimer || 0) + item[state.item].power();
           saved.weatherCooldown = Math.max(saved.weatherCooldown || 0, saved.weatherTimer);
           if (typeof updateWildBuffs === "function") updateWildBuffs();
@@ -8359,6 +8426,15 @@
           usedItems,
         });
         if (cloneId && cloneId !== realId) {
+          // Phase D audit fix (C2) — stash the REAL species id on the
+          // clone state BEFORE overwriting saved.currentPkmn, so the
+          // destroy path can restore a clean reference rather than
+          // leaving a dangling __zdcEnemy_ id in save.
+          try {
+            if (__enemyCloneState[cloneId]) {
+              __enemyCloneState[cloneId].prevCurrentPkmn = realId;
+            }
+          } catch (e) { /* ignore */ }
           saved.currentPkmn = cloneId;
           dispatchOnSwitchIn(cloneId);
           // Record this clone's item for the trainer's dedup list. Guard
@@ -8392,8 +8468,13 @@
     };
   }
 
-  // leaveCombat wrap: destroy all clones + overlay + ticker. Runs BEFORE
-  // vanilla leaveCombat so any post-combat read lands on clean pkmn[].
+  // leaveCombat wrap: destroy all clones + overlay + ticker.
+  // Phase D audit fix (H6) — runs AFTER vanilla leaveCombat instead of
+  // before. The previous order meant the wrap chain's inner layers saw
+  // a dangling saved.currentPkmn and a deleted pkmn[cloneId] when they
+  // tried to read enemy state. Post-orig keeps the clone state alive
+  // for vanilla's leaveCombat body and only destroys it once everyone's
+  // done.
   function installEnemyContextLeaveHook() {
     if (typeof window.leaveCombat !== "function") {
       setTimeout(installEnemyContextLeaveHook, 200);
@@ -8403,8 +8484,12 @@
     window.__zdcEnemyContextLeaveHooked = true;
     const origLeave = window.leaveCombat;
     window.leaveCombat = function () {
-      try { destroyAllEnemyClones(); } catch (e) { /* ignore */ }
-      return origLeave.apply(this, arguments);
+      let result;
+      try { result = origLeave.apply(this, arguments); }
+      finally {
+        try { destroyAllEnemyClones(); } catch (e) { /* ignore */ }
+      }
+      return result;
     };
   }
 
@@ -8438,7 +8523,9 @@
       const res = origMoveBuff.apply(this, arguments);
       try {
         if (target !== "wild") return res;
-        if (!buff || !/burn|freeze|confused|paralysis|poisoned|sleep/.test(buff)) return res;
+        // Phase D audit fix (M6) — anchor the status regex so we don't
+        // match substring false positives (exact match only).
+        if (!buff || !/^(burn|freeze|confused|paralysis|poisoned|sleep)$/.test(buff)) return res;
         const cid = saved && saved.currentPkmn;
         if (!cid || !__enemyCloneState[cid]) return res;
         const state = __enemyCloneState[cid];
@@ -8462,12 +8549,19 @@
             if (typeof updateWildBuffs === "function") updateWildBuffs();
           }
         }
-        // ── Guts: first burn/poison/paralysis tick triggers +atk. Flips
-        // the state flag and calls the shared __reInflateClone helper. ──
+        // ── Guts: first burn/poison/paralysis tick triggers +atk. Fix
+        // for audit bug C1 — we used to call __reInflateClone which ran
+        // the FULL applyItemBstInflation path, compounding every static
+        // bump (hugePower, items, ate-family, etc.) onto already-inflated
+        // stats. Now we apply the +50 % atk bump DIRECTLY, one-shot
+        // gated on state.gutsApplied so it can't double up.
         if ((state.ability === "guts" || state.hiddenAbility === "guts") && !state.gutsApplied
-            && /burn|poisoned|paralysis/.test(buff)) {
+            && /^(burn|poisoned|paralysis)$/.test(buff)) {
           state.gutsApplied = true;
-          __reInflateClone(cid, state);
+          try {
+            const cd = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cd && cd.bst) cd.bst.atk = (cd.bst.atk || 0) * 1.5;
+          } catch (e) { /* ignore */ }
         }
         // ── Phase B audit additions — status-immunity abilities. Zero
         // out the matching wildBuffs slot the moment it lands. Applies
@@ -8490,8 +8584,9 @@
         };
         for (const abId of Object.keys(STATUS_IMMUNITY)) {
           const blocks = STATUS_IMMUNITY[abId];
+          // Phase D audit fix (M6) — exact equality, not substring match.
           if ((state.ability === abId || state.hiddenAbility === abId)
-              && buff.indexOf(blocks) !== -1
+              && buff === blocks
               && typeof wildBuffs === "object" && wildBuffs[blocks]) {
             wildBuffs[blocks] = 0;
             if (typeof updateWildBuffs === "function") updateWildBuffs();
@@ -8511,28 +8606,33 @@
           if (typeof updateWildBuffs === "function") updateWildBuffs();
         }
         // ── Phase C — wonderSkin: 50 % chance status moves miss the
-        // clone. When a major status lands, flip a coin and clear it.
+        // clone. Phase D audit fix (M5) — only clear the buff that just
+        // landed, not every major status.
         if ((state.ability === "wonderSkin" || state.hiddenAbility === "wonderSkin")
-            && /burn|freeze|paralysis|poisoned|sleep|confused/.test(buff)
-            && Math.random() < 0.5 && typeof wildBuffs === "object") {
-          ["burn","freeze","paralysis","poisoned","sleep","confused"].forEach((b) => {
-            if (wildBuffs[b]) wildBuffs[b] = 0;
-          });
+            && Math.random() < 0.5 && typeof wildBuffs === "object" && wildBuffs[buff]) {
+          wildBuffs[buff] = 0;
           if (typeof updateWildBuffs === "function") updateWildBuffs();
         }
-        // ── Marvel Scale / Living Shield — status-triggered def/sdef
-        // bump via shared re-inflate helper.
+        // ── Marvel Scale / Living Shield — direct one-shot bumps. Same
+        // fix as the guts branch above (audit bug C1): apply the def /
+        // sdef multiplier inline, gated on state flag, no re-inflation.
         if ((state.ability === "marvelScale" || state.hiddenAbility === "marvelScale")
             && !state.marvelScaleApplied
-            && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
+            && /^(burn|freeze|paralysis|poisoned|sleep)$/.test(buff)) {
           state.marvelScaleApplied = true;
-          __reInflateClone(cid, state);
+          try {
+            const cd = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cd && cd.bst) cd.bst.def = (cd.bst.def || 0) * 1.30;
+          } catch (e) { /* ignore */ }
         }
         if ((state.ability === "livingShield" || state.hiddenAbility === "livingShield")
             && !state.livingShieldApplied
-            && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
+            && /^(burn|freeze|paralysis|poisoned|sleep)$/.test(buff)) {
           state.livingShieldApplied = true;
-          __reInflateClone(cid, state);
+          try {
+            const cd = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cd && cd.bst) cd.bst.sdef = (cd.bst.sdef || 0) * 1.30;
+          } catch (e) { /* ignore */ }
         }
       } catch (e) { /* swallow */ }
       return res;
@@ -8591,7 +8691,12 @@
       pt[sl] = { pkmn: undefined, item: undefined };
     }
     run.factoryTeam.forEach((rental, i) => {
-      pt["slot" + (i + 1)] = { pkmn: rental.id, item: undefined };
+      // Phase D — propagate the rental's held item into the preview slot.
+      // Initial round-1 rentals roll with no item; post-victory swap can
+      // give them an item via confirmFactorySwap; that item survives every
+      // subsequent round's preview-slot rebuild because it lives on the
+      // rental object itself.
+      pt["slot" + (i + 1)] = { pkmn: rental.id, item: rental.item || undefined };
     });
     saved.currentPreviewTeam = FACTORY_PREVIEW_SLOT;
     run.tiedPreviewSlot = FACTORY_PREVIEW_SLOT;
@@ -8980,7 +9085,11 @@
     // combat engine sees the new species on next launch.
     run.factoryTeam[giveIdx] = incoming;
     const pt = saved.previewTeams && saved.previewTeams[FACTORY_PREVIEW_SLOT];
-    if (pt) pt["slot" + (giveIdx + 1)] = { pkmn: incoming.id, item: undefined };
+    // Phase D — held item transfers with the swap. Vanilla's injectPreview-
+    // Team copies `.item` into team[slot] at combat start and the damage
+    // formula reads team[slot].item natively — no player-side dispatch
+    // needed.
+    if (pt) pt["slot" + (giveIdx + 1)] = { pkmn: incoming.id, item: incoming.item || undefined };
 
     // Apply the new rental's full spec (moves + nature + IVs + ability)
     // to pkmn[id], backing up the incoming species' original state so
@@ -12774,8 +12883,16 @@
             nature: (cache && cache.nature) || r.nature || simulateNatureFor(r.id) || "",
             ivs,
             ability: abilityRef,
+            // Held item TRANSFERS with the swap — canonical Gen 3 Battle
+            // Factory rule. The engine reads team[slot].item natively, so
+            // handing the rental the item it fought with just works: Choice
+            // Band still gives +45 % atk, Leftovers still ticks its heal,
+            // Life Orb still recoils. Plumbed into enterFactoryPreviewSlot
+            // and confirmFactorySwap so the item lives on the rental object
+            // and propagates to saved.previewTeams[slot].item on every
+            // combat launch.
+            item: cache ? cache.item : null,
             __zdcShiny: !!(cache && cache.shiny),
-            __zdcHeldItem: cache ? cache.item : null,
             __zdcHiddenAbility: cache ? cache.hiddenAbility : null,
           };
         });

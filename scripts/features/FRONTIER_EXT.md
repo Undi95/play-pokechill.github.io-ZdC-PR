@@ -831,7 +831,63 @@ trainer slot is picked from the tier-1 low-BST pool. Capped at 1
 surprise slot per trainer. `pickMovesetFor` picks up the species'
 genuine `unrestrictedLearning` flag.
 
-### 13. Legit work we're NOT doing (documented not-goals)
+### 13. Phase D audit — bugs found post-integration
+
+Full audit after Phase C surfaced a cluster of issues, fixed in the
+same commit as the Factory-swap / Arena-judge / low-div fixes above.
+Listed by severity for reviewer triage:
+
+**CRITICAL:**
+- **C1: `__reInflateClone` double-multiplied BST on status triggers.**
+  `applyItemBstInflation` is not idempotent — it multiplies atk/satk
+  every call. When guts / marvelScale / livingShield flipped their
+  state flag mid-combat, we called it a SECOND time, compounding every
+  static branch. A Machamp with `hugePower + guts + flameOrb` ended up
+  at ~6.6× atk instead of the intended 3.15×.
+  **Fix:** removed the status-triggered branches from
+  `applyItemBstInflation` and moved them inline in the moveBuff wrap.
+  Each trigger now applies its bump DIRECTLY, one-shot, gated on the
+  state flag.
+
+- **C2: `saved.currentPkmn` left pointing at a deleted clone after
+  combat.** Any vanilla UI path reading `pkmn[saved.currentPkmn]`
+  between combat-end and next-spawn would crash.
+  **Fix:** stash the real species id on `state.prevCurrentPkmn` when
+  overwriting; restore in `destroyAllEnemyClones`.
+
+**HIGH:**
+- **H1: Arena verdict `setTimeout` wasn't cancellable.** A verdict
+  triggered in matchup 3 could fire its `wildPkmnHp = 0` write 4.8 s
+  later into an ALREADY-CLOSED combat.
+  **Fix:** stash timer handles on `state.__judgeTimer` /
+  `state.__swapTimer`, clear on `arenaResetState`. Callback body
+  gates on `isInArenaRun() && arenaGetState() === state`.
+
+- **H2: Weather rock duration-extender fired even when the clone
+  didn't set the weather.** heatRock on any enemy extended player-set
+  sunny uptime.
+  **Fix:** new `ROCK_SETTER` map pairs each rock with its matching
+  ability (heatRock + drought, …). Bump requires the ability too.
+
+- **H6: `installEnemyContextLeaveHook` ran `destroyAllEnemyClones`
+  BEFORE vanilla `leaveCombat`.** Inner wrap layers read deleted
+  state.
+  **Fix:** flipped to post-orig ordering.
+
+**MEDIUM:**
+- **M1: Mega transform lost the nature stat-bumps.** The info-row
+  nature pill said "adamant" but the bst didn't reflect it after the
+  mega swap.
+  **Fix:** re-apply nature bumps on the post-mega bst.
+
+- **M5: `wonderSkin` cleared ALL status buffs.** A burned clone
+  hit by Sleep had its existing burn wiped.
+  **Fix:** only clear the specific buff that just landed.
+
+- **M6: moveBuff regex was substring-matching.**
+  **Fix:** anchored regex + exact-equality checks in STATUS_IMMUNITY.
+
+### 14. Legit work we're NOT doing (documented not-goals)
 
 A few things we deliberately declined even when technically feasible:
 - **Dedicated `abilityDictionary.js`**: Pokechill keeps abilities
