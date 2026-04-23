@@ -779,7 +779,59 @@ Combined with the existing tier-staggered item pool (`null` →
 and hidden-ability ramp (0 → 0.25 → 0.75 → 1.0), the progression
 feels genuinely curved rather than flat.
 
-### 10. Legit work we're NOT doing (documented not-goals)
+### 10. Factory swap fidelity
+
+**Problem.** After defeating a Factory trainer, the swap modal shows
+the opponent's 3 Pokémon with their "default" ability + raw IVs from
+`pkmn[id]`, NOT the actual stats the clone fought with.
+
+**What we did.** At `setWildPkmn` wrap time, after the clone is
+created, snapshot the effective state onto
+`trainer.__zdcDefeatedClones[realId]`:
+`{ ability, hiddenAbility, item, nature, shiny, ivRating }`.
+When `onRunVictory` builds `pendingFactorySwap`, it reads from the
+snapshot cache first, falling back to the species default only when
+the cache is missing. The rental inherits the cached `ability` +
+`nature` + IV rating mapped to the 0-6 visual bar. Items, shiny,
+and hidden ability don't transfer (canonical Factory rule), but
+they show on the swap card as flavour.
+
+### 11. Arena judge firing after player KO
+
+**Problem.** When the enemy's 3rd move KO'd the player on turn 3 of
+a matchup, the judge sometimes fired anyway, computed the verdict
+against the NEW (auto-switched-in) player mon, saw full HP +
+inherited damage ledger from the dead mon, and ruled in the player's
+favour — the enemy then got KO'd despite having already killed the
+active mon.
+
+**Root cause.** `readPlayerActiveHp()` read from the CURRENT active
+slot. When the engine auto-switched the dead mon to the next bench
+mon BEFORE our post-orig HP read, we saw the bench mon's full HP
+and the KO-detection path failed to trigger the early reset.
+
+**What we did.** Species-locked HP reader: snapshot the active
+species id BEFORE orig runs, read HP by species post-orig. Secondary
+detector on `readActivePlayerSpecies() !== prevPlayerSpecies` for
+the unambiguous switch signal. Either detector resets the matchup
+and bypasses the judge. Mirror fix on the player-attack path for
+KO'ing the enemy.
+
+### 12. Broken low-division surprise slots
+
+**Problem.** Pokechill's genetics rule lets B/C/D-division (low-BST)
+Pokémon learn ANY move. Our facility pool uses BST percentile
+slicing, which filters low-division mons OUT of silver+ tiers, so
+the rule existed but the player never saw one of these
+"small-stat-but-full-toolbox" threats.
+
+**What we did.** `generateTrainer` now rolls (at silver+) a small
+probability (6 % / 10 % / 15 % at silver / gold / boss) that ONE
+trainer slot is picked from the tier-1 low-BST pool. Capped at 1
+surprise slot per trainer. `pickMovesetFor` picks up the species'
+genuine `unrestrictedLearning` flag.
+
+### 13. Legit work we're NOT doing (documented not-goals)
 
 A few things we deliberately declined even when technically feasible:
 - **Dedicated `abilityDictionary.js`**: Pokechill keeps abilities
