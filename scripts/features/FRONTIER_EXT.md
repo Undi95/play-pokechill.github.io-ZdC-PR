@@ -727,7 +727,59 @@ the helper, which re-runs `applyItemBstInflation` on the clone dict —
 the status-gated branches (which read `wildBuffs` at inflation time)
 then fire correctly. Idempotent: each flag is one-shot per combat.
 
-### 8. Legit work we're NOT doing (documented not-goals)
+### 8. Canonical-legality of assigned abilities
+
+**Problem.** The type-matched scorer loop walks every ability in the
+dict and pushes any that match the species' type. Without additional
+gating, **hidden-only** abilities like Huge Power (natively Azumarill/
+Marill/Mawile), Moxie, Multiscale, Marvel Scale, etc. were eligible to
+land on random type-matched species where they're canonically
+impossible — in Pokémon canon these abilities cannot be inherited
+through breeding/genetics, they're locked to specific species.
+
+A secondary issue: some abilities were technically legal but useless
+for the species (e.g. Huge Power on a pure special attacker — the
++50 % atk is wasted).
+
+**What we did.** At init time, scan every `pkmn[*]` entry once and
+build two sets:
+- `__CANONICAL_NORMAL_POOL` — every ability that appears as a `.ability`
+  (default) on at least one species. These are the "breedable" ones.
+- `__CANONICAL_HIDDEN_POOL` — every ability that appears as `.hidden-
+  Ability` on at least one species.
+
+The subset of abilities that live only in the hidden pool —
+`__CANONICAL_HIDDEN_ONLY` — is the hidden-locked set. In
+`pickAbilityForClone`, we added a gate: `if (isHiddenOnly(id) &&
+id !== defaultId) return;` — a hidden-only ability is never pushed
+into the normal-slot candidate list, unless it's literally the
+species' own default entry. The hidden slot path is untouched (it
+only ever resolves the species' own `hiddenId`).
+
+We also tightened Huge Power's scorer to gate on at least one
+physical attacking move — on Azumarill (where it IS canonically
+legal), we don't waste it on a hypothetical pure-special build.
+
+### 9. Variance curve across difficulty tiers
+
+**Problem.** Using the same weighted-random window across all tiers
+meant pre-silver enemies picked from the same top-6 as bosses — their
+teams felt equally "competent", undercutting the sense of progress.
+
+**What we did.** The top-K window for `pickAbilityForClone`'s weighted-
+random pick now scales with tier:
+- **Pre-silver** → top-10 (chaotic — often the 8th-best ability lands,
+  which looks like a genuinely random / untrained team).
+- **Silver** → top-6 (default diversity).
+- **Gold** → top-4 (tighter, more synergy-focused).
+- **Boss** → top-3 (near-argmax, maximum synergy).
+
+Combined with the existing tier-staggered item pool (`null` →
+`basic` → `mid` → `full`), nature ramp (0 → 0.3 → 1.0 probability),
+and hidden-ability ramp (0 → 0.25 → 0.75 → 1.0), the progression
+feels genuinely curved rather than flat.
+
+### 10. Legit work we're NOT doing (documented not-goals)
 
 A few things we deliberately declined even when technically feasible:
 - **Dedicated `abilityDictionary.js`**: Pokechill keeps abilities

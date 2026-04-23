@@ -6191,7 +6191,16 @@
     rainDish:      (moves, p) => (p.type||[]).some((t)=>t==="water") ? 5 : 2,
 
     // Damage-calc (BST inflation path in applyItemBstInflation).
-    hugePower:     () => 8,
+    // Phase C+ fix — gate hugePower on having at least one physical atk move.
+    // The canonical pool filter blocks it from landing on random species
+    // (it's hidden-only: Azumarill/Marill/Mawile only); on species that DO
+    // legitimately have it, we still avoid wasting +50 % atk on a pure
+    // special attacker. Other stat-split-sensitive abilities (toughClaws,
+    // ironFist, strongJaw) were already gated via their helpers.
+    hugePower:     (moves) => {
+      for (const m of moves) if (m && move[m] && move[m].split === "physical" && (move[m].power || 0) > 0) return 8;
+      return 0;
+    },
     toughClaws:    (moves)   => __anyContactMove(moves) ? 7 : 0,
     ironFist:      (moves)   => __anyPunchMove(moves)   ? 9 : 0,
     strongJaw:     (moves)   => __anyBiteMove(moves)    ? 9 : 0,
@@ -6458,6 +6467,43 @@
   // Which abilities we actually dispatch effects for (others are just
   // "tagged" on the clone for flavor / consistency with display).
   let __ACTIVE_ABILITY_IDS = [];
+  // Phase C+ — canonical-legality pools, built by scanning pkmn[] at init.
+  // Pokémon lore rule we're enforcing: a NORMAL ability is any ability that
+  // at least ONE species carries as `.ability` in the species dict (they can
+  // be shared across many species by breeding/genetics). A HIDDEN-ONLY
+  // ability is one that ONLY ever appears as `.hiddenAbility` on some
+  // species, never as `.ability` on any species — those are locked to the
+  // specific species that have them natively, and CANNOT be assigned as the
+  // normal slot of a random type-matched candidate. Examples of hidden-only
+  // abilities in a typical Pokémon canon: Huge Power (only Azumarill/Marill
+  // have it natively, Mawile carries it as hidden), Moxie, Multiscale,
+  // Marvel Scale (Milotic's), etc. Without this gate, our type-matched
+  // scorer would cheerfully assign hugePower to any pure-physical attacker
+  // whose canon doesn't include it.
+  let __CANONICAL_NORMAL_POOL = new Set();
+  let __CANONICAL_HIDDEN_POOL = new Set();
+  let __CANONICAL_HIDDEN_ONLY = new Set(); // subset: hidden in at least one species, normal in none
+  function __initCanonicalAbilityPools() {
+    __CANONICAL_NORMAL_POOL = new Set();
+    __CANONICAL_HIDDEN_POOL = new Set();
+    __CANONICAL_HIDDEN_ONLY = new Set();
+    if (typeof pkmn !== "object") return;
+    for (const id in pkmn) {
+      const p = pkmn[id];
+      if (!p) continue;
+      if (p.ability) {
+        const aid = typeof p.ability === "object" ? p.ability.id : p.ability;
+        if (aid) __CANONICAL_NORMAL_POOL.add(aid);
+      }
+      if (p.hiddenAbility) {
+        const hid = typeof p.hiddenAbility === "object" ? p.hiddenAbility.id : p.hiddenAbility;
+        if (hid) __CANONICAL_HIDDEN_POOL.add(hid);
+      }
+    }
+    for (const hid of __CANONICAL_HIDDEN_POOL) {
+      if (!__CANONICAL_NORMAL_POOL.has(hid)) __CANONICAL_HIDDEN_ONLY.add(hid);
+    }
+  }
   function __initAbilityPool() {
     if (typeof ability === "undefined") return;
     const missing = [];
@@ -6469,6 +6515,7 @@
     if (missing.length) {
       console.info("[frontier-ext][enemy-ctx] abilities skipped (not in dict):", missing.join(", "));
     }
+    __initCanonicalAbilityPools();
   }
 
   // ─── Move-profile helpers (used by ability scorers) ───────────────────────
@@ -6685,13 +6732,27 @@
     // better no ability than a fake ornament.
     const hasScorer = (id) => !!id && !!__ABILITY_SCORERS[id];
 
+    // Phase C+ canonical-legality gate. Abilities that ONLY exist as a
+    // species' `.hiddenAbility` in pkmn[] (never as a `.ability` default on
+    // any species — e.g. Huge Power, Moxie, Multiscale, Marvel Scale) are
+    // "hidden-locked": they can't be inherited through breeding/genetics
+    // the way normal abilities can. Assigning them to the NORMAL slot of a
+    // random type-matched species is canonically wrong. We allow two
+    // exceptions: the species' OWN defaultId (some legacy dict entries slot
+    // a hidden-locked ability as the default, trust the species-level
+    // choice), and the species' OWN hiddenId when the hidden slot is
+    // resolving (handled below — the hidden slot always respects the
+    // species pkmn.hiddenAbility).
+    const isHiddenOnly = (id) => __CANONICAL_HIDDEN_ONLY.has(id);
+
     // Normal ability — scored pool, EXCLUDING the species' hidden slot.
     const candidates = [];
     const seen = new Set();
     const push = (id) => {
       if (!id || seen.has(id) || !ability[id]) return;
-      if (hiddenId && id === hiddenId) return; // reserved for hidden slot
-      if (!hasScorer(id)) return;              // strict active-only gate
+      if (hiddenId && id === hiddenId) return;                    // reserved for hidden slot
+      if (!hasScorer(id)) return;                                 // strict active-only gate
+      if (isHiddenOnly(id) && id !== defaultId) return;           // canonical-legality gate (Phase C+)
       seen.add(id);
       const score = __ABILITY_SCORERS[id](moveIds || [], cloneMon || p);
       candidates.push({ id, score });
@@ -6715,17 +6776,24 @@
       }
       push(id);
     }
-    // Phase B+ diversity fix: weighted-random pick from the top 6 scoring
-    // candidates instead of pure argmax. Argmax was collapsing every
-    // "universally eligible" species onto the same highest-scoring flat
-    // ability (tintedLens / stamina / speedBoost / etc.) — the audit
-    // name was "coloforce everywhere". Weighted random keeps the best
-    // candidate favoured while still giving lower-score picks real
-    // airtime, and because weights are proportional to score the pick
-    // still meaningfully respects the scorer's intent.
+    // Phase C+ tier-scaled weighted-random pick. The window-size varies by
+    // tier so low-tier enemies feel genuinely random (and often weak) while
+    // high-tier ones play optimally:
+    //   • pre-silver → top-10  (chaotic, bad teams, "nulle")
+    //   • silver     → top-6   (default diversity)
+    //   • gold       → top-4   (tighter, more synergy-focused)
+    //   • boss       → top-3   (near-argmax, maximum synergy)
+    // Base rule from Phase B+ stands: weights proportional to score keep
+    // higher-scoring abilities favoured, lower-score picks get airtime.
     candidates.sort((a, b) => b.score - a.score);
     let normalPick = null;
-    const topPool = candidates.filter((c) => c.score > 0).slice(0, 6);
+    const tierWindow =
+      (gate === "hidden-forced") ? 3 :                          // boss
+      (gate === "hidden-allowed") ? 4 :                         // gold
+      (diff && typeof diff.round === "number" && diff.round >= 1
+        && diff.itemPoolTier && diff.itemPoolTier !== "basic") ? 6 : // silver+
+      10;                                                         // pre-silver
+    const topPool = candidates.filter((c) => c.score > 0).slice(0, tierWindow);
     if (topPool.length) {
       const totalW = topPool.reduce((s, c) => s + c.score, 0);
       let r = Math.random() * totalW;
