@@ -6116,6 +6116,16 @@
     // __fireAbilityOnSwitchIn wrap).
     "heatRock", "dampRock", "smoothRock", "icyRock",
     "foggySeed", "electricSeed", "grassySeed", "mistySeed",
+    // Phase C — the full 17-berry resist family. Each reduces super-
+    // effective damage taken from a specific type. Pokechill's dict tags
+    // them `sort: "berry"` so we flag them via that instead of hardcoding
+    // each id in multiple places. applyItemBstInflation applies a modest
+    // +5 % def/sdef bump when ANY berry is held — conservative proxy for
+    // "the clone shrugs off one super-effective hit".
+    "occaBerry", "passhoBerry", "wacanBerry", "rindoBerry", "yacheBerry",
+    "chopleBerry", "kebiaBerry", "shucaBerry", "cobaBerry", "payapaBerry",
+    "tangaBerry", "chartiBerry", "kasibBerry", "habanBerry", "colburBerry",
+    "babiriBerry", "roseliBerry",
     // ejectPack / ejectButton excluded — their effect ends with "switch to
     // the previous/next team member" once all moves are executed. Enemies in
     // ZdC fight solo (no bench), so the switch is a no-op at best and a
@@ -6362,6 +6372,88 @@
     blaze:         (moves) => __anyMoveOfType(moves, "fire")   ? 4 : 0,
     swarm:         (moves) => __anyMoveOfType(moves, "bug")    ? 4 : 0,
     torrent:       (moves) => __anyMoveOfType(moves, "water")  ? 4 : 0,
+
+    // ═════════════════════════════════════════════════════════════════
+    // PHASE C — final ability-activation sweep. Canonical reference
+    // audit covered every ability in Pokechill's moveDictionary.js;
+    // these are the remaining FEASIBLE-EASY dispatches.
+    // ═════════════════════════════════════════════════════════════════
+
+    // ── Weather-speed extenders (mirrors chlorophyll/swiftSwim/etc.).
+    intangible:    () => 3,
+    hyperconductor:() => 3,
+    faeRush:       () => 3,
+
+    // ── Pinch-family extensions (TYPE_PINCH — 12 abilities). Same
+    //    semantic as overgrow/blaze/swarm/torrent but for the other 12
+    //    types.
+    bastion:       (moves) => __anyMoveOfType(moves, "steel")    ? 4 : 0,
+    average:       (moves) => __anyMoveOfType(moves, "normal")   ? 4 : 0,
+    resolve:       (moves) => __anyMoveOfType(moves, "fighting") ? 4 : 0,
+    mistify:       (moves) => __anyMoveOfType(moves, "psychic")  ? 4 : 0,
+    hexerei:       (moves) => __anyMoveOfType(moves, "ghost")    ? 4 : 0,
+    glimmer:       (moves) => __anyMoveOfType(moves, "fairy")    ? 4 : 0,
+    skyward:       (moves) => __anyMoveOfType(moves, "flying")   ? 4 : 0,
+    draconic:      (moves) => __anyMoveOfType(moves, "dragon")   ? 4 : 0,
+    noxious:       (moves) => __anyMoveOfType(moves, "poison")   ? 4 : 0,
+    solid:         (moves) => __anyMoveOfType(moves, "rock")     ? 4 : 0,
+    rime:          (moves) => __anyMoveOfType(moves, "ice")      ? 4 : 0,
+    voltage:       (moves) => __anyMoveOfType(moves, "electric") ? 4 : 0,
+
+    // ── Guard family (17 abilities). Canonical effect is "halve X-type
+    //    incoming damage". We can't intercept the damage-calc type-
+    //    effectiveness multiplier, so we approximate via a modest
+    //    +6 % def/sdef bump baked at inflation time.
+    grabGuard:     () => 2,
+    waterGuard:    () => 2,
+    flameGuard:    () => 2,
+    curseGuard:    () => 2,
+    poisonGuard:   () => 2,
+    iceGuard:      () => 2,
+    psychicGuard:  () => 2,
+    fairyGuard:    () => 2,
+    leafGuard:     () => 2,
+    plainGuard:    () => 2,
+    sinisterGuard: () => 2,
+    steelGuard:    () => 2,
+    dragonGuard:   () => 2,
+    bugGuard:      () => 2,
+    rockGuard:     () => 2,
+    groundGuard:   () => 2,
+    flyingGuard:   () => 2,
+
+    // ── Universal BST bumps.
+    shieldsDown:   () => 5,
+    treasureOfRuin:() => 5,
+    thousandArms:  () => 6,
+    darkAura:      () => 3,
+    soulAsterism:  () => 3,
+    sharpness:     (moves) => {
+      for (const m of moves) if (m && /cut|slash|scissor|wing|claw|psychoCut/i.test(m)) return 8;
+      return 0;
+    },
+
+    // ── Stat-change defenses (moveBuff-wrap dispatch).
+    hyperCutter:   () => 3,
+    bigPecks:      () => 3,
+    wonderSkin:    () => 3,
+
+    // ── Team-veil status blocks.
+    flowerVeil:    () => 3,
+    aromaVeil:     () => 3,
+    sweetVeil:     () => 3,
+    pastelVeil:    () => 3,
+
+    // ── Reactive stat bumps (dispatchOnTakeDamage).
+    gooey:         () => 3,
+    angerPoint:    (moves) => {
+      for (const m of moves) if (m && move[m] && move[m].split === "physical") return 4;
+      return 0;
+    },
+    justified:     (moves) => {
+      for (const m of moves) if (m && move[m] && move[m].split === "special") return 4;
+      return 0;
+    },
   };
   // Which abilities we actually dispatch effects for (others are just
   // "tagged" on the clone for flavor / consistency with display).
@@ -6711,6 +6803,12 @@
       "blackBelt", "poisonBarb", "softSand", "sharpBeak", "twistedSpoon",
       "silverPowder", "hardStone", "spellTag", "dragonFang", "blackGlasses",
       "metalCoat", "silkScarf", "fairyFeather",
+      // Phase C — 17 resist berries. Low-ceiling defensive items (0.7×
+      // SE damage on one type), flavor-appropriate for the basic tier.
+      "occaBerry", "passhoBerry", "wacanBerry", "rindoBerry", "yacheBerry",
+      "chopleBerry", "kebiaBerry", "shucaBerry", "cobaBerry", "payapaBerry",
+      "tangaBerry", "chartiBerry", "kasibBerry", "habanBerry", "colburBerry",
+      "babiriBerry", "roseliBerry",
     ]);
     const POOL_TIER_MID_ADDS = new Set([
       "lifeOrb", "choiceBand", "choiceSpecs", "lightClay", "laggingTail",
@@ -6787,6 +6885,38 @@
       const rockId = WEATHER_ROCK_FOR[abId];
       if (abilitySet.has(abId) && item[rockId] && pool.indexOf(rockId) !== -1 && Math.random() < 0.15) {
         return rockId;
+      }
+    }
+    // Phase C — resist-berry synergy. If the clone's type has a common
+    // 4× weakness, 20 % chance to hand it the matching berry so the
+    // player can't one-shot it by slapping super-effective coverage. Rare
+    // enough that most enemies still take SE normally, rare enough that
+    // a boss carrying a berry against your coverage move feels like a
+    // tactical choice rather than a cheat. ─────────────────────────────
+    const BERRY_FOR_WEAKNESS = {
+      fire:     "occaBerry",   water:    "passhoBerry", electric: "wacanBerry",
+      grass:    "rindoBerry",  ice:      "yacheBerry",  fighting: "chopleBerry",
+      poison:   "kebiaBerry",  ground:   "shucaBerry",  flying:   "cobaBerry",
+      psychic:  "payapaBerry", bug:      "tangaBerry",  rock:     "chartiBerry",
+      ghost:    "kasibBerry",  dragon:   "habanBerry",  dark:     "colburBerry",
+      steel:    "babiriBerry", fairy:    "roseliBerry",
+    };
+    if (cloneMon && Math.random() < 0.20) {
+      const cloneTypes = Array.isArray(cloneMon.type) ? cloneMon.type : [cloneMon.type];
+      const COMMON_WEAKNESS = {
+        grass:"fire", ice:"fire", steel:"fire", bug:"fire",
+        fire:"water", ground:"water", rock:"water",
+        water:"electric", flying:"electric",
+        rock:"fighting", dark:"fighting", normal:"fighting", ice:"fighting", steel:"fighting",
+        grass:"ice", dragon:"ice", flying:"ice", ground:"ice",
+        psychic:"dark", ghost:"dark",
+        fairy:"poison",
+      };
+      for (const t of cloneTypes) {
+        const weak = COMMON_WEAKNESS[t];
+        if (!weak) continue;
+        const berryId = BERRY_FOR_WEAKNESS[weak];
+        if (berryId && item[berryId] && pool.indexOf(berryId) !== -1) return berryId;
       }
     }
 
@@ -7142,6 +7272,8 @@
     const weatherSpeed = {
       chlorophyll:"sunny", swiftSwim:"rainy", sandRush:"sandstorm",
       slushRush:"hail",    moltShed:"foggy",
+      // Phase C — terrain-speed extenders.
+      intangible:"foggy", hyperconductor:"electricTerrain", faeRush:"mistyTerrain",
     };
     if (weatherSpeed[abilityId] && typeof weatherActive !== "undefined"
         && weatherActive === weatherSpeed[abilityId]) {
@@ -7279,10 +7411,17 @@
     if (abilityId === "livingShield" && hasStatus) {
       clone.bst.sdef *= 1.30;
     }
-    // ── Pinch abilities (overgrow / blaze / swarm / torrent). Conserv-
-    // ative +10 % atk/satk on any matching-type damaging move (uptime
-    // proxy for the canonical +30 % below 50 % HP).
-    const PINCH = { overgrow: "grass", blaze: "fire", swarm: "bug", torrent: "water" };
+    // ── Pinch abilities (overgrow / blaze / swarm / torrent + the 12
+    // Phase C additions). Conservative +10 % atk/satk on any matching-
+    // type damaging move (uptime proxy for the canonical +30 % below
+    // 50 % HP).
+    const PINCH = {
+      overgrow:"grass", blaze:"fire", swarm:"bug", torrent:"water",
+      // Phase C type-pinch extensions.
+      bastion:"steel", average:"normal", resolve:"fighting", mistify:"psychic",
+      hexerei:"ghost", glimmer:"fairy", skyward:"flying", draconic:"dragon",
+      noxious:"poison", solid:"rock", rime:"ice", voltage:"electric",
+    };
     if (PINCH[abilityId]) {
       const matchType = PINCH[abilityId];
       let hasType = false;
@@ -7294,6 +7433,55 @@
         if (hasPhys) clone.bst.atk  *= 1.10;
         if (hasSpec) clone.bst.satk *= 1.10;
       }
+    }
+    // ── Phase C universal bumps ──────────────────────────────────────
+    if (abilityId === "shieldsDown") {
+      clone.bst.def  *= 1.25;
+      clone.bst.sdef *= 1.25;
+    }
+    if (abilityId === "treasureOfRuin") {
+      if (hasPhys) clone.bst.atk  *= 1.05;
+      if (hasSpec) clone.bst.satk *= 1.05;
+    }
+    if (abilityId === "thousandArms") {
+      if (hasPhys) clone.bst.atk  *= 1.40;
+      if (hasSpec) clone.bst.satk *= 1.40;
+    }
+    if (abilityId === "darkAura") {
+      if (hasPhys) clone.bst.atk  *= 1.05;
+      if (hasSpec) clone.bst.satk *= 1.05;
+    }
+    if (abilityId === "soulAsterism") {
+      if (hasPhys) clone.bst.atk  *= 1.05;
+      if (hasSpec) clone.bst.satk *= 1.05;
+    }
+    // Sharpness — sharp-named moves ×1.5 (name-regex same as metalhead).
+    if (abilityId === "sharpness") {
+      let hasSharp = false;
+      for (const m of moves) if (m && /cut|slash|scissor|wing|claw|psychoCut/i.test(m)) { hasSharp = true; break; }
+      if (hasSharp) {
+        if (hasPhys) clone.bst.atk  *= 1.20;
+        if (hasSpec) clone.bst.satk *= 1.20;
+      }
+    }
+    // Guard family — approximated as universal +6 % def/sdef.
+    const GUARD_FAMILY = new Set([
+      "grabGuard","waterGuard","flameGuard","curseGuard","poisonGuard",
+      "iceGuard","psychicGuard","fairyGuard","leafGuard","plainGuard",
+      "sinisterGuard","steelGuard","dragonGuard","bugGuard","rockGuard",
+      "groundGuard","flyingGuard",
+    ]);
+    if (GUARD_FAMILY.has(abilityId)) {
+      clone.bst.def  *= 1.06;
+      clone.bst.sdef *= 1.06;
+    }
+    // ── Phase C item-side: resist berries (17 types). Same blocker as
+    // Guard family (no damage-calc type-effectiveness hook), so we
+    // approximate with a modest +5 % def/sdef bump when ANY resist berry
+    // is held. Keyed off item[itemId].sort === "berry".
+    if (hasItem && item[itemId] && item[itemId].sort === "berry") {
+      clone.bst.def  *= 1.05;
+      clone.bst.sdef *= 1.05;
     }
   }
 
@@ -7833,6 +8021,31 @@
       state.weaknessPolicyConsumed = true;
       state.item = null;
     }
+    // ── Phase C — Gooey: -1 speed on the player every time the clone
+    // takes damage (contact proxy: ANY damage tick). Capped at spedown3
+    // to avoid runaway stacks.
+    if ((state.ability === "gooey" || state.hiddenAbility === "gooey")
+        && deltaHp > 0 && typeof team === "object"
+        && typeof exploreActiveMember !== "undefined" && team[exploreActiveMember]) {
+      try {
+        team[exploreActiveMember].buffs = team[exploreActiveMember].buffs || {};
+        team[exploreActiveMember].buffs.spedown1 = Math.max(team[exploreActiveMember].buffs.spedown1 || 0, 3);
+        if (typeof updateTeamBuffs === "function") updateTeamBuffs();
+      } catch (e) { /* ignore */ }
+    }
+    // ── Phase C — AngerPoint / Justified: +2 atk or satk (3 turns) when
+    // the clone takes a big hit (approx "super-effective"). Idempotent
+    // via state flags — only fires the first time.
+    if ((state.ability === "angerPoint" || state.hiddenAbility === "angerPoint")
+        && !state.angerPointApplied && deltaHp > wildPkmnHpMax * 0.25) {
+      state.angerPointApplied = true;
+      try { if (typeof wildBuffs === "object") { wildBuffs.atkup2 = Math.max(wildBuffs.atkup2 || 0, 3); if (typeof updateWildBuffs === "function") updateWildBuffs(); } } catch (e) { /* ignore */ }
+    }
+    if ((state.ability === "justified" || state.hiddenAbility === "justified")
+        && !state.justifiedApplied && deltaHp > wildPkmnHpMax * 0.25) {
+      state.justifiedApplied = true;
+      try { if (typeof wildBuffs === "object") { wildBuffs.satkup2 = Math.max(wildBuffs.satkup2 || 0, 3); if (typeof updateWildBuffs === "function") updateWildBuffs(); } } catch (e) { /* ignore */ }
+    }
   }
 
   // ─── END-TURN DISPATCHER ─────────────────────────────────────────────────
@@ -8018,6 +8231,22 @@
 
   // moveBuff wrap: intercept status being applied to the enemy (target=="wild"
   // branch). Fires lumBerry consumption.
+  // Phase C dedup helper — the "status lands → re-apply BST inflation so the
+  // status-triggered ability branch (guts / marvelScale / livingShield /
+  // angerPoint / justified) bumps stats on the in-memory clone" pattern was
+  // repeated 3× verbatim. Wrap it once so future ability additions (scorch,
+  // corrosion, any post-hit damage-boost family) can reuse the same trigger
+  // without copy-pasting the try/catch shell.
+  function __reInflateClone(cid, state) {
+    try {
+      const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
+      if (!cloneDict) return;
+      const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
+      applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
+      if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
+    } catch (e) { /* ignore */ }
+  }
+
   function installEnemyContextMoveBuffHook() {
     if (typeof window.moveBuff !== "function") {
       setTimeout(installEnemyContextMoveBuffHook, 200);
@@ -8054,34 +8283,31 @@
             if (typeof updateWildBuffs === "function") updateWildBuffs();
           }
         }
-        // ── Guts: first burn/poison/paralysis tick triggers +atk (1.5x
-        // atk already baked via BST inflation once fired; here we flip
-        // the state flag so the BST re-apply picks it up). ──────────────
+        // ── Guts: first burn/poison/paralysis tick triggers +atk. Flips
+        // the state flag and calls the shared __reInflateClone helper. ──
         if ((state.ability === "guts" || state.hiddenAbility === "guts") && !state.gutsApplied
             && /burn|poisoned|paralysis/.test(buff)) {
           state.gutsApplied = true;
-          // Re-apply BST inflation path so the atk bump lands on the clone's
-          // in-memory stats (cannot trust the engine to do it for us).
-          try {
-            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
-            if (cloneDict) {
-              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
-              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
-              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
-            }
-          } catch (e) { /* ignore */ }
+          __reInflateClone(cid, state);
         }
         // ── Phase B audit additions — status-immunity abilities. Zero
         // out the matching wildBuffs slot the moment it lands. Applies
         // to BOTH normal and hidden slot so the dual-ability model holds
-        // consistently. ────────────────────────────────────────────────
+        // consistently. Phase C expands with the "veil" team-immunity
+        // family (flowerVeil / aromaVeil / sweetVeil / pastelVeil) —
+        // same semantic as the singleton immunities since solo enemies
+        // can't really share the protection. ──────────────────────────
         const STATUS_IMMUNITY = {
-          insomnia:   "sleep",
-          immunity:   "poisoned",
-          limber:     "paralysis",
-          ownTempo:   "confused",
-          magmaArmor: "freeze",
-          waterVeil:  "burn",
+          insomnia:    "sleep",
+          immunity:    "poisoned",
+          limber:      "paralysis",
+          ownTempo:    "confused",
+          magmaArmor:  "freeze",
+          waterVeil:   "burn",
+          flowerVeil:  "paralysis",
+          aromaVeil:   "burn",
+          sweetVeil:   "confused",
+          pastelVeil:  "poisoned",
         };
         for (const abId of Object.keys(STATUS_IMMUNITY)) {
           const blocks = STATUS_IMMUNITY[abId];
@@ -8092,34 +8318,42 @@
             if (typeof updateWildBuffs === "function") updateWildBuffs();
           }
         }
-        // ── Marvel Scale / Living Shield — +50 % def / sdef when a
-        // major status just landed. Same trigger/re-inflate pattern as
-        // guts. Only fires once (idempotent via state flag).
+        // ── Phase C — stat-drop immunities. hyperCutter blocks atkdown,
+        // bigPecks blocks defdown. Zero the matching buff slots the
+        // moment a stat-lowering move lands.
+        if ((state.ability === "hyperCutter" || state.hiddenAbility === "hyperCutter")
+            && /atkdown/.test(buff) && typeof wildBuffs === "object") {
+          ["atkdown1","atkdown2","atkdown3"].forEach((k) => { if (wildBuffs[k]) wildBuffs[k] = 0; });
+          if (typeof updateWildBuffs === "function") updateWildBuffs();
+        }
+        if ((state.ability === "bigPecks" || state.hiddenAbility === "bigPecks")
+            && /defdown/.test(buff) && typeof wildBuffs === "object") {
+          ["defdown1","defdown2","defdown3"].forEach((k) => { if (wildBuffs[k]) wildBuffs[k] = 0; });
+          if (typeof updateWildBuffs === "function") updateWildBuffs();
+        }
+        // ── Phase C — wonderSkin: 50 % chance status moves miss the
+        // clone. When a major status lands, flip a coin and clear it.
+        if ((state.ability === "wonderSkin" || state.hiddenAbility === "wonderSkin")
+            && /burn|freeze|paralysis|poisoned|sleep|confused/.test(buff)
+            && Math.random() < 0.5 && typeof wildBuffs === "object") {
+          ["burn","freeze","paralysis","poisoned","sleep","confused"].forEach((b) => {
+            if (wildBuffs[b]) wildBuffs[b] = 0;
+          });
+          if (typeof updateWildBuffs === "function") updateWildBuffs();
+        }
+        // ── Marvel Scale / Living Shield — status-triggered def/sdef
+        // bump via shared re-inflate helper.
         if ((state.ability === "marvelScale" || state.hiddenAbility === "marvelScale")
             && !state.marvelScaleApplied
             && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
           state.marvelScaleApplied = true;
-          try {
-            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
-            if (cloneDict) {
-              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
-              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
-              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
-            }
-          } catch (e) { /* ignore */ }
+          __reInflateClone(cid, state);
         }
         if ((state.ability === "livingShield" || state.hiddenAbility === "livingShield")
             && !state.livingShieldApplied
             && /burn|freeze|paralysis|poisoned|sleep/.test(buff)) {
           state.livingShieldApplied = true;
-          try {
-            const cloneDict = (typeof pkmn === "object") ? pkmn[cid] : null;
-            if (cloneDict) {
-              const moveIds = Array.isArray(cloneDict.moves) ? cloneDict.moves.slice() : [];
-              applyItemBstInflation(cloneDict, state.item, state.ability, moveIds);
-              if (state.hiddenAbility) applyItemBstInflation(cloneDict, null, state.hiddenAbility, moveIds);
-            }
-          } catch (e) { /* ignore */ }
+          __reInflateClone(cid, state);
         }
       } catch (e) { /* swallow */ }
       return res;

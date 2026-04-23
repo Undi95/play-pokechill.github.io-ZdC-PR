@@ -387,6 +387,14 @@ time so the inline formula reads the boosted value transparently.
 | marvelScale | def ×1.30 | any major status on clone (checked at inflation; moveBuff hook re-inflates when status lands mid-combat) |
 | livingShield | sdef ×1.30 | any major status on clone (same re-inflation pattern) |
 | overgrow / blaze / swarm / torrent | atk&satk ×1.10 | matching grass/fire/bug/water attacking move (conservative uptime proxy for the canonical "+30 % below 50 % HP") |
+| bastion / average / resolve / mistify / hexerei / glimmer / skyward / draconic / noxious / solid / rime / voltage (Phase C type-pinch family) | atk&satk ×1.10 | matching steel/normal/fighting/psychic/ghost/fairy/flying/dragon/poison/rock/ice/electric attacking move |
+| intangible / hyperconductor / faeRush | bst.spe +3 | `weatherActive === "foggy"/"electricTerrain"/"mistyTerrain"` (fills the gap left by the Phase 1 weather-speed map) |
+| shieldsDown | def&sdef ×1.25 | flat (SE becomes neutral ⇒ approx dmg-taken reduction) |
+| treasureOfRuin / darkAura / soulAsterism | atk&satk ×1.05 | flat team-aura proxy |
+| thousandArms | atk&satk ×1.40 | flat "all moves super-effective" proxy (rare Pecharunt-tier ability) |
+| sharpness | atk&satk ×1.20 | name-regex match on any cut/slash/scissor/wing/claw/psychoCut move |
+| Guard family (17 abilities: grabGuard, waterGuard, flameGuard, curseGuard, poisonGuard, iceGuard, psychicGuard, fairyGuard, leafGuard, plainGuard, sinisterGuard, steelGuard, dragonGuard, bugGuard, rockGuard, groundGuard, flyingGuard) | def&sdef ×1.06 | flat universal bump (can't intercept damage-calc type-eff multiplier; conservative proxy for "halves type-X damage taken") |
+| any resist berry held (item-side) | def&sdef ×1.05 | `item[x].sort === "berry"` detection; universal flag catches all 17 resist berries |
 
 ### Mid-combat dispatch (moveBuff wrap)
 
@@ -404,6 +412,25 @@ back to 0 and call `updateWildBuffs()` to re-render.
 | ownTempo | `confused` |
 | magmaArmor | `freeze` |
 | waterVeil | `burn` |
+| flowerVeil (Phase C) | `paralysis` |
+| aromaVeil (Phase C) | `burn` |
+| sweetVeil (Phase C) | `confused` |
+| pastelVeil (Phase C) | `poisoned` |
+| hyperCutter (Phase C) | `atkdown1` / `atkdown2` / `atkdown3` |
+| bigPecks (Phase C) | `defdown1` / `defdown2` / `defdown3` |
+| wonderSkin (Phase C) | any major status — 50 % RNG zero-out |
+
+### On-take-damage dispatch (dispatchOnTakeDamage)
+
+Fires whenever the enemy HP drops (the poller detects the delta). Used for
+reactive stat bumps and item consumption triggers.
+
+| Ability / Item | Effect | Trigger |
+|---|---|---|
+| weaknessPolicy | wildBuffs.atkup2 + satkup2 (3 turns) | deltaHp > 25 % max (approx super-effective) |
+| gooey (Phase C) | team[active].buffs.spedown1 (3 turns) | any damage tick |
+| angerPoint (Phase C) | wildBuffs.atkup2 (3 turns), once | deltaHp > 25 % max, physical profile |
+| justified (Phase C) | wildBuffs.satkup2 (3 turns), once | deltaHp > 25 % max, special profile |
 
 ### Cosmetic abilities we can't dispatch
 
@@ -469,9 +496,17 @@ deliberate outcome — see "Cosmetic abilities we can't dispatch" above.
 | Tier | Pool contents |
 |---|---|
 | `null` | No item at all (pre-Silver) |
-| `"basic"` | leftovers, orbs (flame/toxic), quickClaw, mentalHerb, powerHerb, clearAmulet, heavyDutyBoots, all 18 type boosters |
+| `"basic"` | leftovers, orbs (flame/toxic), quickClaw, mentalHerb, powerHerb, clearAmulet, heavyDutyBoots, all 18 type boosters, **all 17 resist berries** (Phase C) |
 | `"mid"` (adds) | lifeOrb, choiceBand, choiceSpecs, lightClay, laggingTail, metronome, luckyPunch, loadedDice, heatRock, dampRock, smoothRock, icyRock, foggySeed, electricSeed, grassySeed, mistySeed |
 | `"full"` (adds) | weaknessPolicy, assaultVest, eviolite, all 18 gems, mega stones (probabilistic via `getMegaStonesForSpecies`) |
+
+**Resist-berry synergy (Phase C):** 20 % chance that a clone whose type
+has a common 4× weakness is handed the matching resist berry
+(occa/passho/wacan/rindo/yache/chople/kebia/shuca/coba/payapa/tanga/
+charti/kasib/haban/colbur/babiri/roseli). Rare enough that most enemies
+still take super-effective hits normally, rare enough that a boss
+carrying the berry against your coverage move feels tactical rather than
+cheat-y.
 
 Ability-item synergies fire probabilistically **before** the generic
 roll, so you see thematic combos (Guts + Flame Orb, Iron Fist + Lucky
@@ -544,6 +579,167 @@ authoritative stat-display logic in vanilla Pokechill):
 
 The engine then reads the already-modified stat, and the on-screen
 nature pill on the info row is no longer a lie.
+
+---
+
+## Technical challenges encountered & how we solved them
+
+This section captures the architectural obstacles we hit building the
+enemy-context system on top of an engine that was never designed to
+support them, and the workarounds we landed on. Future contributors —
+this is the "why did they do it that way" reference.
+
+### 1. The engine only reads `attacker.nature` on the player side
+
+**Problem.** Pokechill's damage formula in `explore.js:2504-2506` (phys)
+and `:2533-2535` (spec) adjusts `attackerStars` by the attacker's nature
+— but the "attacker" in `exploreCombatWild()` at `:3644 / :3673` is
+resolved to `pkmn[saved.currentPkmn].bst.atk` **without any nature
+check**. Setting `clone.nature = "adamant"` and walking away leaves the
+nature purely cosmetic on the enemy.
+
+**Why we can't fix the engine.** No source-file edits allowed — it's a
+core design rule of the overlay. Wrapping `exploreCombatWild` would
+require re-implementing 400+ lines of damage formula to slot a nature
+adjustment between bst-read and power-calc.
+
+**What we did.** Pre-bump `clone.bst.*` by the matching ±1 star at
+nature-apply time (`cloneEnemyForCombat`). Mapping lifted 1:1 from
+`tooltip.js:1195-1215`, which is the authoritative "what does nature X
+do to stats" source. The engine then reads the already-modified stat
+transparently.
+
+### 2. The engine never reads enemy items
+
+**Problem.** Player items are read via `team[exploreActiveMember].item`
+in dozens of places (damage formula, weather duration, healing ticks,
+item-effect hooks). The enemy side reads `wildPkmn.item` in **zero**
+places. Every enemy-held item was dead code until we dispatched it
+ourselves.
+
+**What we did.** Split enemy item effects across four dispatch
+surfaces:
+- **BST pre-inflation** (`applyItemBstInflation`) for multiplicative
+  effects — Life Orb, Choice Band, Assault Vest, Eviolite, Leftovers
+  (as a bigger HP pool, since Pokechill's Leftovers reduces fatigue
+  rather than healing), type boosters, gems, all resist berries.
+- **Switch-in writes** (`dispatchOnSwitchIn`) for instantaneous state
+  changes — Flame Orb / Toxic Orb pre-status, weather duration extension
+  via heat/damp/smooth/icy rock and foggy/electric/grassy/misty seed
+  (vanilla's `changeWeather` only bumps `saved.weatherTimer` for
+  `team[active].item`, so we mirror the bump for the enemy side).
+- **moveBuff-wrap interception** (`installEnemyContextMoveBuffHook`)
+  for reactive items — Lum Berry zeroes the status that just landed.
+- **On-take-damage tick** (`dispatchOnTakeDamage`) for HP-threshold
+  triggers — Weakness Policy fires `wildBuffs.atkup2/satkup2` when a
+  >25 %-of-max hit lands.
+
+### 3. The engine never reads enemy abilities
+
+**Problem.** Same shape as the item problem. `testAbility('active',
+ability.foo.id)` is the canonical ability check — it's hard-coded to
+iterate `team[...]`. The enemy's `wildPkmn.ability` is never consulted
+for any gameplay effect.
+
+**What we did.** Dispatch enemy abilities via the same four surfaces
+above, plus the end-turn polling tick (`dispatchEndTurn`, ~500 ms
+poller) for anything that fires "at end of turn" — Speed Boost adds a
++1 spe stage, Ice Body / Rain Dish heal 1/16 HP under matching weather,
+Life Orb deals 10 % recoil after the clone deals damage.
+
+**Dual-ability model.** When `__enemyCloneState[id].hiddenAbility` is
+set (post-Gold probabilistic unlock or boss guaranteed), dispatchers
+fire **both** the normal and hidden slot — mirrors Pokechill's own
+player-side "hidden unlocked" state, where both abilities are active
+simultaneously rather than one replacing the other.
+
+### 4. Many canonical abilities have no dispatchable hook
+
+**Problem.** Some abilities need hooks the engine simply doesn't
+expose — no pre-damage multiplier hook (filter, multiscale, thick fat,
+the 9 absorb abilities, the 9 flash absorb/speed abilities), no
+accuracy-roll hook (no guard), no on-contact hook for the attacker
+(static / flame body / poison point), no pre-move-pick hook (protean /
+libero), no post-KO hook (moxie / chilling neigh / beast boost).
+
+**What we did.** Triaged every ability in `moveDictionary.js`
+(~180 entries) into three buckets:
+- **ACTIVE** (~100 abilities): scorer + dispatch implemented, see the
+  damage-calc and mid-combat tables above.
+- **APPROXIMATED** (~25 abilities — Guard family, resist berries,
+  shieldsDown, tintedLens, filter-like): dispatched via a conservative
+  universal BST bump (usually ±5–8 % def/sdef) that captures the
+  "generally tankier vs that type" feel without needing the type-
+  specific gate the engine won't let us hook.
+- **COSMETIC-IMPOSSIBLE** (~55 abilities): listed explicitly in the
+  "Cosmetic abilities we can't dispatch" table with the specific engine
+  hook that would be required. The strict rule — "if we can't make it
+  work, don't assign it" — means these species either get one of their
+  dispatchable alternates (hugePower / sheerForce / technician / etc.)
+  or no ability pill at all. Better empty than a non-functional
+  ornament.
+
+### 5. The ability scorer was monopolistic (the "coloforce bug")
+
+**Problem.** Early versions of `pickAbilityForClone` used pure argmax.
+Combined with several universally-eligible flat scorers (tintedLens,
+stamina, speedBoost), almost every enemy whose canonical default wasn't
+active ended up with the same handful of abilities — tintedLens in
+particular was "coloforce everywhere" in FR runs.
+
+**What we did.**
+- Weighted-random pick from the top-6 candidates, with weights
+  proportional to score. Higher-scoring abilities are still favoured,
+  but lower-score picks get real airtime.
+- Tightened universally-eligible scorers (tintedLens now requires
+  3+ distinct offensive types AND scores 3 instead of 6).
+- Hidden-slot collision re-rolls weighted over the non-hidden pool so
+  the "2 different abilities" invariant holds.
+
+### 6. Cross-team item uniqueness
+
+**Problem.** Canonical Battle Frontier trainers always carry 3
+**distinct** items on their 3-Pokémon team. Without intervention our
+`pickItemForClone` would independently roll for each mon, yielding
+frequent "3× Leftovers" trainer lineups.
+
+**What we did.** Plumbed a `trainer.__zdcItemsUsed` array through the
+`setWildPkmn` wrap → `cloneEnemyForCombat` → `pickItemForClone`. Items
+already assigned to teammates are filtered out of the pool before the
+pick. When the trainer is defeated and `generateTrainer` produces a
+fresh trainer object, the field doesn't carry over — dedup resets
+naturally. Falls back to allowing a dupe only if dedup would empty the
+pool on tiny item-tier pools.
+
+### 7. Re-inflation on mid-combat state changes
+
+**Problem.** Several status-reactive abilities (Guts, Marvel Scale,
+Living Shield, Anger Point, Justified) trigger when a status or big
+hit lands **during** combat. The initial `applyItemBstInflation` pass
+at `cloneEnemyForCombat` time doesn't see those, so the bumps never
+apply.
+
+**What we did.** Factored a `__reInflateClone(cid, state)` helper out
+of the three repeated guts/marvel/living try-catch blocks. When the
+moveBuff wrap detects a status landing, it flips the matching state
+flag (`state.gutsApplied`, `state.marvelScaleApplied`, etc.) and calls
+the helper, which re-runs `applyItemBstInflation` on the clone dict —
+the status-gated branches (which read `wildBuffs` at inflation time)
+then fire correctly. Idempotent: each flag is one-shot per combat.
+
+### 8. Legit work we're NOT doing (documented not-goals)
+
+A few things we deliberately declined even when technically feasible:
+- **Dedicated `abilityDictionary.js`**: Pokechill keeps abilities
+  inside `moveDictionary.js`. We don't reshape that; we just grep it.
+- **Damage-formula wrapping**: wrapping `exploreCombat` /
+  `exploreCombatWild` would in theory let us dispatch filter /
+  multiscale / absorb / flash / magicGuard / wonder guard / all the
+  other damage-interceptors. We don't, because (a) the functions are
+  400+ lines with many control-flow branches and wrapping them risks
+  desyncing future vanilla updates, (b) the conservative BST-bump
+  approximation is good enough in practice, (c) the overlay's
+  source-file-edit-free contract would become much harder to hold.
 
 ---
 
