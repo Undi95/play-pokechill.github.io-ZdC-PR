@@ -205,7 +205,7 @@
 
     const progSilverToGold = Math.min(1, Math.max(0, (round - silver) / Math.max(1, gold - silver)));
 
-    const ivRating = 1 + progGold * 5;
+    const ivRating = Math.max(0, Math.min(6, Math.round(1 + progGold * 5)));
 
     let abilityChance = 0;
     if (round >= 3) abilityChance = 0.25;
@@ -904,14 +904,30 @@
 
     const __moveTier = diff && diff.itemPoolTier;
     const __lowTier = __moveTier !== "full";
+    const __preSilver = __moveTier == null;
+    const __moveRarityMult = (mv) => {
+      const r = mv && typeof mv.rarity === "number" ? mv.rarity : 2;
+      if (__preSilver) {
+        return r === 1 ? 3.5 : r === 2 ? 1.8 : 0.35;
+      }
+      if (__lowTier) {
+        return r === 1 ? 1.8 : r === 2 ? 1.3 : 0.75;
+      }
+      return r === 1 ? 1.20 : r === 2 ? 1.10 : 1.00;
+    };
     const pickTopN = (list, n) => {
       if (!list.length) return null;
-      const widen = __lowTier ? 2 : 0;
-      const slice = list.slice(0, Math.min(n + widen, list.length));
-      if (Math.random() < (__lowTier ? 0.22 : 0.12)) {
+      const slice = __preSilver
+        ? list.slice()
+        : list.slice(0, Math.min(n + (__lowTier ? 3 : 1), list.length));
+      if (Math.random() < (__preSilver ? 0.30 : __lowTier ? 0.22 : 0.15)) {
         return slice[Math.floor(Math.random() * slice.length)];
       }
-      const weights = slice.map((_, i) => slice.length - i);
+      const weights = slice.map((c, i) => {
+        const posWeight = __preSilver ? 1 : (slice.length - i);
+        const rMult = __moveRarityMult(c.mv);
+        return Math.max(0.1, posWeight * rMult);
+      });
       const total = weights.reduce((s, w) => s + w, 0);
       let r = Math.random() * total;
       for (let i = 0; i < slice.length; i++) {
@@ -978,21 +994,31 @@
     }
 
     const allowSetup = !diff || (diff.ivRating || 0) >= 3;
-    if (allowSetup && chosen.length < 4) {
-      let setupKey = null;
-      for (const bucket of setupPref) {
+    const setupSkipChance = __preSilver ? 0.50 : __lowTier ? 0.30 : 0.15;
+    if (allowSetup && chosen.length < 4 && Math.random() > setupSkipChance) {
+      const topBucketCount = __lowTier ? 3 : 2;
+      const candidatePool = [];
+      for (let bi = 0; bi < Math.min(topBucketCount, setupPref.length); bi++) {
+        const bucket = setupPref[bi];
         const learnables = learnableCat(bucket);
-        if (!learnables.length) continue;
-
-        const prefExtreme = diff && (diff.mult || 0) >= 1 && (diff.forceSignature || diff.ivRating === 6);
-        if (prefExtreme && bucket !== "setupExtreme") {
-          const extreme = learnableCat("setupExtreme");
-          if (extreme.length && Math.random() < 0.35) { setupKey = extreme[Math.floor(Math.random() * extreme.length)]; break; }
-        }
-        setupKey = learnables[Math.floor(Math.random() * learnables.length)];
-        if (setupKey) break;
+        for (const id of learnables) candidatePool.push({ id, bucketRank: bi });
       }
-      if (setupKey) push(setupKey);
+      const prefExtreme = diff && (diff.mult || 0) >= 1 && (diff.forceSignature || diff.ivRating === 6);
+      if (prefExtreme) {
+        const extreme = learnableCat("setupExtreme");
+        for (const id of extreme) candidatePool.push({ id, bucketRank: 0 });
+      }
+      if (candidatePool.length) {
+        const weights = candidatePool.map((c) => Math.max(1, 4 - c.bucketRank));
+        const total = weights.reduce((s, w) => s + w, 0);
+        let r = Math.random() * total;
+        let pickEntry = candidatePool[0];
+        for (let i = 0; i < candidatePool.length; i++) {
+          r -= weights[i];
+          if (r <= 0) { pickEntry = candidatePool[i]; break; }
+        }
+        push(pickEntry.id);
+      }
     }
 
     const __defaultAbId = (p.ability && (typeof p.ability === "object" ? p.ability.id : p.ability)) || null;
@@ -5312,6 +5338,27 @@
     },
     brittleArmor:  (moves, p) => (p.type||[]).some((t)=>t==="ice"||t==="rock") ? 4 : 0,
 
+    iceBody:       (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 4 : 0,
+    static:        (moves, p) => (p.type||[]).some((t)=>t==="electric") ? 3 : 0,
+    flameBody:     (moves, p) => (p.type||[]).some((t)=>t==="fire") ? 3 : 0,
+    poisonPoint:   (moves, p) => (p.type||[]).some((t)=>t==="poison") ? 3 : 0,
+    strangeCharm:  (moves, p) => (p.type||[]).some((t)=>t==="psychic"||t==="fairy") ? 3 : 0,
+    effectSpore:   (moves, p) => (p.type||[]).some((t)=>t==="grass") ? 3 : 0,
+    glacialBody:   (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 3 : 0,
+    voltAbsorb:    (moves, p) => (p.type||[]).some((t)=>t==="electric"||t==="ground") ? 5 : 3,
+    waterAbsorb:   (moves, p) => (p.type||[]).some((t)=>t==="water"||t==="ground"||t==="rock") ? 5 : 3,
+    flareAbsorb:   (moves, p) => (p.type||[]).some((t)=>t==="fire"||t==="ice"||t==="grass"||t==="bug"||t==="steel") ? 5 : 3,
+    curseAbsorb:   (moves, p) => (p.type||[]).some((t)=>t==="ghost"||t==="dark") ? 5 : 3,
+    poisonAbsorb:  (moves, p) => (p.type||[]).some((t)=>t==="poison"||t==="grass"||t==="fairy") ? 5 : 3,
+    frostAbsorb:   (moves, p) => (p.type||[]).some((t)=>t==="ice"||t==="ground"||t==="flying"||t==="dragon") ? 5 : 3,
+    psychicAbsorb: (moves, p) => (p.type||[]).some((t)=>t==="psychic"||t==="dark") ? 5 : 3,
+    lightAbsorb:   (moves, p) => (p.type||[]).some((t)=>t==="fairy"||t==="steel"||t==="poison") ? 5 : 3,
+    growthAbsorb:  (moves, p) => (p.type||[]).some((t)=>t==="grass"||t==="ground"||t==="water"||t==="rock") ? 5 : 3,
+    rivalry:       () => 4,
+    synchronize:   () => 3,
+    scrappy:       (moves, p) => (p.type||[]).some((t)=>t==="normal"||t==="fighting") ? 3 : 0,
+    magicGuard:    () => 3,
+
     ambidextrous:  (moves) => {
       const types = new Set();
       for (const m of moves) {
@@ -5682,9 +5729,24 @@
       if (isHiddenOnly(id) && id !== defaultId) return;
       seen.add(id);
       const rawScore = __ABILITY_SCORERS[id](moveIds || [], cloneMon || p);
-
-      const score = rawScore * dedupMult(id);
+      const score = rawScore * rarityMult(id) * dedupMult(id);
       candidates.push({ id, score });
+    };
+
+    const rarityMult = (id) => {
+      const ab = ability[id];
+      const r = (ab && typeof ab.rarity === "number") ? ab.rarity : 2;
+      if (gate === "hidden-forced") {
+        return r === 3 ? 1.35 : r === 2 ? 1.20 : 0.45;
+      }
+      if (gate === "hidden-allowed") {
+        return r === 3 ? 1.20 : r === 2 ? 1.10 : 0.50;
+      }
+      const poolTier = diff && diff.itemPoolTier;
+      if (poolTier === "basic") {
+        return r === 3 ? 0.55 : r === 2 ? 0.80 : 1.00;
+      }
+      return r === 3 ? 0.25 : r === 2 ? 0.55 : 1.00;
     };
 
     if (defaultId) push(defaultId);
@@ -5703,17 +5765,21 @@
     candidates.sort((a, b) => b.score - a.score);
     let normalPick = null;
     const tierWindow =
-      (gate === "hidden-forced") ? 3 :
-      (gate === "hidden-allowed") ? 4 :
+      (gate === "hidden-forced") ? 5 :
+      (gate === "hidden-allowed") ? 7 :
       (diff && typeof diff.round === "number" && diff.round >= 1
-        && diff.itemPoolTier && diff.itemPoolTier !== "basic") ? 6 :
-      10;
+        && diff.itemPoolTier && diff.itemPoolTier !== "basic") ? 10 :
+      14;
     const topPool = candidates.filter((c) => c.score > 0).slice(0, tierWindow);
     if (topPool.length) {
-      const totalW = topPool.reduce((s, c) => s + c.score, 0);
-      let r = Math.random() * totalW;
-      for (const c of topPool) { r -= c.score; if (r <= 0) { normalPick = c.id; break; } }
-      if (!normalPick) normalPick = topPool[0].id;
+      if (Math.random() < 0.12) {
+        normalPick = topPool[Math.floor(Math.random() * topPool.length)].id;
+      } else {
+        const totalW = topPool.reduce((s, c) => s + c.score, 0);
+        let r = Math.random() * totalW;
+        for (const c of topPool) { r -= c.score; if (r <= 0) { normalPick = c.id; break; } }
+        if (!normalPick) normalPick = topPool[0].id;
+      }
     }
 
     if (!normalPick && defaultId && hasScorer(defaultId)) normalPick = defaultId;
@@ -6379,6 +6445,39 @@
       if (hasSpec) clone.bst.satk *= 1.04;
     }
 
+    if (abilityId === "iceBody") {
+      clone.bst.def  *= 1.08;
+      clone.bst.sdef *= 1.04;
+    }
+    const ABSORB_FAMILY = new Set([
+      "voltAbsorb","waterAbsorb","flareAbsorb","curseAbsorb","poisonAbsorb",
+      "frostAbsorb","psychicAbsorb","lightAbsorb","growthAbsorb",
+    ]);
+    if (ABSORB_FAMILY.has(abilityId)) {
+      clone.bst.hp   = (clone.bst.hp   || 0) * 1.08;
+      clone.bst.sdef = (clone.bst.sdef || 0) * 1.05;
+    }
+    const CONTACT_STATUS_FAMILY = new Set([
+      "static","flameBody","poisonPoint","strangeCharm","effectSpore","glacialBody",
+    ]);
+    if (CONTACT_STATUS_FAMILY.has(abilityId)) {
+      clone.bst.def  *= 1.04;
+    }
+    if (abilityId === "rivalry") {
+      if (hasPhys) clone.bst.atk  *= 1.06;
+      if (hasSpec) clone.bst.satk *= 1.06;
+    }
+    if (abilityId === "synchronize") {
+      clone.bst.sdef *= 1.04;
+    }
+    if (abilityId === "scrappy") {
+      if (hasPhys) clone.bst.atk  *= 1.05;
+    }
+    if (abilityId === "magicGuard") {
+      clone.bst.hp   *= 1.06;
+      clone.bst.sdef *= 1.04;
+    }
+
     if (abilityId === "sharpness" && typeof ability !== "undefined" && ability.sharpness) {
       __applyAvgOffense(__countAffected(ability.sharpness.id), 1.5);
     }
@@ -6441,7 +6540,9 @@
     const atkBoostActivePre = postGold || isBoss;
     applyBstInflation(clone, ivVal, atkBoostActivePre);
 
+    const isFlamme = !!(diff && typeof diff.mult === "number" && diff.mult >= 2);
     const abilityGate = isBoss ? "hidden-forced"
+                      : isFlamme ? "hidden-forced"
                       : postGold ? "hidden-allowed"
                       : "default-only";
     const pickedAbility = pickAbilityForClone(realId, moveIds, clone, diff, abilityGate, opts.usedAbilities);
@@ -6666,17 +6767,25 @@
     }
     const parts = [];
 
+    const __abRarityColor = (abId) => {
+      const ab = (typeof ability !== "undefined") ? ability[abId] : null;
+      const r = (ab && typeof ab.rarity === "number") ? ab.rarity : 2;
+      if (r === 3) return "rgba(170,100,210,0.45)";
+      if (r === 2) return "rgba(100,149,237,0.40)";
+      return "rgba(120,190,130,0.40)";
+    };
+
     if (state.ability && typeof ability !== "undefined" && ability[state.ability]) {
       const label = (typeof format === "function") ? format(state.ability) : state.ability;
       parts.push(
-        `<span class="zdc-enemy-ability" style="background:rgba(100,149,237,0.35);padding:1px 6px;border-radius:3px;">${label}</span>`
+        `<span class="zdc-enemy-ability" style="background:${__abRarityColor(state.ability)};padding:1px 6px;border-radius:3px;">${label}</span>`
       );
     }
 
     if (state.hiddenAbility && typeof ability !== "undefined" && ability[state.hiddenAbility]) {
       const label = (typeof format === "function") ? format(state.hiddenAbility) : state.hiddenAbility;
       parts.push(
-        `<span class="zdc-enemy-hidden" style="background:rgba(200,160,60,0.40);padding:1px 6px;border-radius:3px;" title="Hidden Ability (unlocked)">` +
+        `<span class="zdc-enemy-hidden" style="background:${__abRarityColor(state.hiddenAbility)};padding:1px 6px;border-radius:3px;" title="Hidden Ability (unlocked)">` +
         `<span style="color:#ffd86b;font-weight:bold;">★</span> ${label}</span>`
       );
     }

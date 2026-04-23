@@ -95,6 +95,72 @@ future upstream frontier additions.
 
 ---
 
+## Enemy generation — distribution simulation
+
+4200 clones generated across 7 facilities × 4 tiers (pre-silver → silver → gold → flamme-1 post-gold rematch) × 150 rolls each. Zero logic violations (Quick Claw without fast move, luckyPunch without ironFist, etc.).
+
+### Abilities (rarity split, Pokechill dict tags)
+
+| Tier | Common | Uncommon | Rare |
+|---|---|---|---|
+| pre-silver | 88.7% | 8.5% | 2.9% |
+| silver | 83.4% | 11.0% | 5.6% |
+| **gold** | **48.8%** | **22.8%** | **28.4%** |
+| **flamme-1** | **39.4%** | **26.3%** | **34.3%** |
+| global avg | 61.5% | 18.4% | 20.1% |
+
+Pre-silver/silver keep the "bad Emerald early teams" feel (common dominant), gold+ shifts to a balanced mix where rare signature abilities emerge.
+
+### Hidden abilities
+
+Forced at boss + flamme (post-gold rematch) tiers. Of species with a scored hidden ability:
+
+| Tier | Hidden assigned |
+|---|---|
+| pre-silver / silver | 0% (tier gate) |
+| gold | 48.2% |
+| flamme-1 | **64.7%** |
+
+### Moves (rarity split)
+
+| Tier | Common | Uncommon | Rare |
+|---|---|---|---|
+| pre-silver | 29.4% | 37.5% | 28.5% |
+| silver | 8.2% | 12.8% | 69.4% |
+| gold | 10.3% | 8.5% | 70.1% |
+| flamme-1 | 11.0% | 8.8% | 69.1% |
+
+Pre-silver picks favor low-BP / priority moves (quickAttack / iceShard / feintAttack / pursuit / doubleSlap) for the "beginner-trainer" feel. Silver+ shifts to high-power signatures. Setup move coverage: 12% pre-silver, 63% silver, 86% gold/flamme — no more dragonDance-on-everything spam.
+
+### Split / speed profile (global)
+
+- Physical 44.9% / Special 34.9% / Status 20.2%
+- Fast (priority) 14.5% / Normal 76.5% / Slow (charge) 9.4%
+
+### Items (held, 68 distinct picks at gold)
+
+Top 10: `leftovers`, `quickClaw`, `lifeOrb`, resist berries (occa/passho/choople/yache/colbur), `weaknessPolicy`, `heavyDutyBoots`, `clearAmulet`, `choiceSpecs`, `assaultVest`. Every pool tier item has at least one pick path; no item is dead weight.
+
+### Natures (of the 67% clones with a nature rolled)
+
+jolly 35% / adamant 25% / modest 23% / quiet 8% / bold 6% / relaxed 2%.
+All six Pokechill natures appear.
+
+### Shiny
+
+0.9% observed (target 1/140 ≈ 0.71%, post-gold rematch bumps to 1/100).
+
+### IV stars (pre-inflation roll)
+
+| Tier | Distribution |
+|---|---|
+| pre-silver | 1★ 57% / 2★ 43% |
+| silver | 2★ 14% / 3★ 14% / 4★ 71% |
+| gold | 6★ 100% |
+| flamme-1 | 6★ 100% |
+
+---
+
 ## Try it locally
 
 ```bash
