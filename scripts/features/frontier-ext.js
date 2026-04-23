@@ -6405,6 +6405,33 @@
     sandVeil:      (moves, p) => (p.type||[]).some((t)=>/rock|ground|steel/.test(t)) ? 4 : 0,
     snowCloak:     (moves, p) => (p.type||[]).some((t)=>t==="ice") ? 4 : 0,
 
+    // Phase E — canonical engine-key abilities using move.affectedBy.
+    libero:        (moves) => {
+      if (typeof ability === "undefined" || !ability.libero) return 0;
+      let n = 0;
+      for (const m of moves) {
+        if (!m || !move[m] || !(move[m].power > 0)) continue;
+        if (move[m].affectedBy && move[m].affectedBy.indexOf(ability.libero.id) !== -1) n++;
+      }
+      return n >= 2 ? 11 : n >= 1 ? 8 : 0;
+    },
+    reckless:      (moves) => {
+      if (typeof ability === "undefined" || !ability.reckless) return 0;
+      let n = 0;
+      for (const m of moves) {
+        if (!m || !move[m] || !(move[m].power > 0)) continue;
+        if (move[m].affectedBy && move[m].affectedBy.indexOf(ability.reckless.id) !== -1) n++;
+      }
+      return n >= 2 ? 9 : n >= 1 ? 6 : 0;
+    },
+    normalize:     (moves) => {
+      let n = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) n++;
+      return n >= 3 ? 5 : n >= 2 ? 3 : 0;
+    },
+    climaTact:     () => 3,
+    brittleArmor:  (moves, p) => (p.type||[]).some((t)=>t==="ice"||t==="rock") ? 4 : 0,
+
     // ═════════════════════════════════════════════════════════════════
     // PHASE B — additional damage-calc / speed / HP abilities.
     // ═════════════════════════════════════════════════════════════════
@@ -7354,7 +7381,8 @@
     // itemId so we don't double-inflate item effects). ────────────────────
     const hasItem = !!itemId && !!item[itemId];
 
-    // Type-booster / gem path.
+    // Phase E — Type booster / gem path with per-mon averaging and real
+    // item.power() values. Gems add STAB-enable boost on non-STAB moves.
     if (hasItem && __TYPE_BOOSTERS.has(itemId)) {
       const BOOSTER_TYPE_MAP = {
         charcoal:"fire", mysticWater:"water", miracleSeed:"grass", magnet:"electric",
@@ -7370,13 +7398,31 @@
       };
       const t = BOOSTER_TYPE_MAP[itemId];
       if (t) {
-        // Count moves of that type. Bail if < 2 (otherwise wasted bst).
-        let count = 0;
-        for (const m of moves) if (m && move[m] && move[m].type === t) count++;
-        if (count >= 2) {
-          const mult = /Gem$/.test(itemId) ? GEM_MULT : TYPE_BOOSTER_MULT;
-          clone.bst.atk  *= mult;
-          clone.bst.satk *= mult;
+        let physCountOfType = 0, specCountOfType = 0;
+        let totalPhys = 0, totalSpec = 0;
+        for (const m of moves) {
+          if (!m || !move[m] || !(move[m].power > 0)) continue;
+          if (move[m].split === "physical") {
+            totalPhys++;
+            if (move[m].type === t) physCountOfType++;
+          } else if (move[m].split === "special") {
+            totalSpec++;
+            if (move[m].type === t) specCountOfType++;
+          }
+        }
+        let rawMult = 1.1;
+        try { rawMult = item[itemId].power(); } catch (e) { /* default */ }
+        const cloneType = Array.isArray(clone.type) ? clone.type : (clone.type ? [clone.type] : []);
+        const isGem = /Gem$/.test(itemId);
+        const isStab = cloneType.indexOf(t) !== -1;
+        const effMult = (isGem && !isStab) ? rawMult * 1.10 : rawMult;
+        if (physCountOfType > 0 && totalPhys > 0) {
+          const avgPhys = (physCountOfType * effMult + (totalPhys - physCountOfType)) / totalPhys;
+          clone.bst.atk *= avgPhys;
+        }
+        if (specCountOfType > 0 && totalSpec > 0) {
+          const avgSpec = (specCountOfType * effMult + (totalSpec - specCountOfType)) / totalSpec;
+          clone.bst.satk *= avgSpec;
         }
       }
     } else if (hasItem) {
@@ -7402,57 +7448,104 @@
     // wedge into the inline formula).
     const hasPhys = moves.some((m) => m && move[m] && move[m].split === "physical");
     const hasSpec = moves.some((m) => m && move[m] && move[m].split === "special");
-    if (abilityId === "sheerForce" && __countSecondaryEffectMoves(moves) >= 2) {
-      if (hasPhys) clone.bst.atk  *= 1.30;
-      if (hasSpec) clone.bst.satk *= 1.30;
+    // Phase E — engine's affectedBy catalog. sheerForce + technician
+    // are auto-tagged onto every move they affect at moveDictionary.js:
+    // 5428/5433.
+    if (abilityId === "sheerForce" && typeof ability !== "undefined" && ability.sheerForce) {
+      __applyAvgOffense(__countAffected(ability.sheerForce.id), 1.25);
     }
-    if (abilityId === "technician" && __countLowBpMoves(moves) >= 2) {
-      if (hasPhys) clone.bst.atk  *= 1.20;
-      if (hasSpec) clone.bst.satk *= 1.20;
+    if (abilityId === "technician" && typeof ability !== "undefined" && ability.technician) {
+      __applyAvgOffense(__countAffected(ability.technician.id), 1.5);
     }
-    if (abilityId === "adaptability" && __anyStabMove(moves, clone)) {
-      // ≈ 2.0x vs 1.5x STAB on STAB moves only. Averaged over 4 moves: +20%.
-      if (hasPhys) clone.bst.atk  *= 1.15;
-      if (hasSpec) clone.bst.satk *= 1.15;
+    if (abilityId === "adaptability") {
+      // Canonical: STAB +0.2 (1.7 vs 1.5) — relative bump ≈ 1.133× on
+      // STAB moves only. Per-mon averaged.
+      const types = Array.isArray(clone.type) ? clone.type : (clone.type ? [clone.type] : []);
+      let stabCount = 0;
+      for (const m of moves) {
+        if (!m || !move[m] || !(move[m].power > 0)) continue;
+        if (types.indexOf(move[m].type) !== -1) stabCount++;
+      }
+      __applyAvgOffense(stabCount, 1.7 / 1.5);
     }
+    // Libero ×2 on fast moves (priority): auto-tagged at moveDictionary.js:5438.
+    if (abilityId === "libero" && typeof ability !== "undefined" && ability.libero) {
+      __applyAvgOffense(__countAffected(ability.libero.id), 2.0);
+    }
+    // Reckless ×1.5 on slow moves: auto-tagged at moveDictionary.js:5437.
+    if (abilityId === "reckless" && typeof ability !== "undefined" && ability.reckless) {
+      __applyAvgOffense(__countAffected(ability.reckless.id), 1.5);
+    }
+    // Normalize — all moves become normal + ×1.3 universal.
+    if (abilityId === "normalize") {
+      __applyAvgOffense(__dmgMoveCount, 1.3);
+    }
+    // Phase E audit fix — canonical multipliers + move.affectedBy + per-mon
+    // averaged. See comments in the playground copy.
+    const __avgBoost = (affectedCount, totalDmgMoves, mult) => {
+      if (totalDmgMoves <= 0 || affectedCount <= 0) return 1;
+      return (affectedCount * mult + (totalDmgMoves - affectedCount)) / totalDmgMoves;
+    };
+    const __countAffected = (abId) => {
+      if (!abId) return 0;
+      let n = 0;
+      for (const m of moves) {
+        if (!m || !move[m] || !(move[m].power > 0)) continue;
+        if (move[m].affectedBy && move[m].affectedBy.indexOf(abId) !== -1) n++;
+      }
+      return n;
+    };
+    const __dmgMoveCount = (function () {
+      let n = 0;
+      for (const m of moves) if (m && move[m] && (move[m].power || 0) > 0) n++;
+      return n;
+    })();
+    const __applyAvgOffense = (affectedCount, mult) => {
+      if (affectedCount <= 0) return;
+      const avg = __avgBoost(affectedCount, __dmgMoveCount, mult);
+      if (hasPhys) clone.bst.atk  *= avg;
+      if (hasSpec) clone.bst.satk *= avg;
+    };
+
     if (abilityId === "hugePower") {
-      clone.bst.atk *= 1.5;
+      clone.bst.atk *= 2.0;                                            // canonical ×2 physical
     }
-    if (abilityId === "toughClaws") {
-      clone.bst.atk *= 1.10;
+    if (abilityId === "toughClaws" && typeof ability !== "undefined" && ability.toughClaws) {
+      __applyAvgOffense(__countAffected(ability.toughClaws.id), 2.0);
     }
-    if (abilityId === "ironFist" && __anyPunchMove(moves)) {
-      clone.bst.atk *= 1.12;
+    if (abilityId === "ironFist" && typeof ability !== "undefined" && ability.ironFist) {
+      __applyAvgOffense(__countAffected(ability.ironFist.id), 1.5);
     }
-    if (abilityId === "strongJaw" && __anyBiteMove(moves)) {
-      clone.bst.atk *= 1.12;
+    if (abilityId === "strongJaw" && typeof ability !== "undefined" && ability.strongJaw) {
+      __applyAvgOffense(__countAffected(ability.strongJaw.id), 2.0);
     }
     // ── Ate-family: normal-type moves convert AND gain ~1.2x BP. Since we
     // can't wedge into the damage calc, we bump atk/satk by ~1.25 when the
     // clone has any normal-type attacking move. Fourteen branches — one per
     // converter in Pokechill. ────────────────────────────────────────────
+    // Phase E — ate-family mapping. Phase A/B/C shipped with two errors
+    // (chrysilate → rock, gloomilate → ghost) that the audit against
+    // Pokechill's own moveDictionary.js:1102-1158 revealed:
+    //   chrysilate → BUG
+    //   gloomilate → DARK
     const ateSet = {
       aerilate:"flying", pixilate:"fairy", galvanize:"electric", glaciate:"ice",
       pyrolate:"fire",   terralate:"ground", toxilate:"poison", hydrolate:"water",
-      ferrilate:"steel", chrysilate:"rock",  verdify:"grass",   gloomilate:"ghost",
+      ferrilate:"steel", chrysilate:"bug",   verdify:"grass",   gloomilate:"dark",
       espilate:"psychic", dragonMaw:"dragon",
     };
     if (ateSet[abilityId]) {
-      let hasNormalAtk = false;
+      // Phase E — canonical ×1.3 (engine line 2610-2625). Per-mon averaged.
+      let normalCount = 0;
       for (const m of moves) {
-        if (!m || !move[m]) continue;
-        if (move[m].type === "normal" && (move[m].power || 0) > 0) { hasNormalAtk = true; break; }
+        if (!m || !move[m] || !(move[m].power > 0)) continue;
+        if (move[m].type === "normal") normalCount++;
       }
-      if (hasNormalAtk) {
-        if (hasPhys) clone.bst.atk  *= 1.25;
-        if (hasSpec) clone.bst.satk *= 1.25;
-      }
+      __applyAvgOffense(normalCount, 1.3);
     }
-    // ── Skill Link: every multihit rolls max hits. +18% atk/satk when the
-    // clone actually has one. Gated via canonical multihit detection.
-    if (abilityId === "skillLink" && moves.some(isMultiHit)) {
-      if (hasPhys) clone.bst.atk  *= 1.18;
-      if (hasSpec) clone.bst.satk *= 1.18;
+    // Skill Link: multihit max-forcing ≈ 1.4× damage on multihit moves.
+    if (abilityId === "skillLink" && typeof ability !== "undefined" && ability.skillLink) {
+      __applyAvgOffense(__countAffected(ability.skillLink.id), 1.4);
     }
     // ── Unburden: doubles speed once the item is consumed. Since many
     // enemy items aren't consumed mid-combat (choice/type-booster/etc.),
@@ -7526,25 +7619,12 @@
       if (hasPhys) clone.bst.atk  *= 1.15;
       if (hasSpec) clone.bst.satk *= 1.15;
     }
-    // ── Mega Launcher: pulse moves BP×1.5. Detected via name regex
-    // (water/dragon/origin pulse, auraSphere — matches Pokechill's
-    // movesAffectedByMegaLauncher list).
-    if (abilityId === "megaLauncher") {
-      let hasPulse = false;
-      for (const m of moves) if (m && /pulse|auraSphere/i.test(m)) { hasPulse = true; break; }
-      if (hasPulse) {
-        if (hasPhys) clone.bst.atk  *= 1.20;
-        if (hasSpec) clone.bst.satk *= 1.20;
-      }
+    // ── Mega Launcher / Metalhead: canonical ×1.5 via affectedBy.
+    if (abilityId === "megaLauncher" && typeof ability !== "undefined" && ability.megaLauncher) {
+      __applyAvgOffense(__countAffected(ability.megaLauncher.id), 1.5);
     }
-    // ── Metalhead: head/butt moves BP×1.5.
-    if (abilityId === "metalhead") {
-      let hasHead = false;
-      for (const m of moves) if (m && /head|butt/i.test(m)) { hasHead = true; break; }
-      if (hasHead) {
-        if (hasPhys) clone.bst.atk  *= 1.20;
-        if (hasSpec) clone.bst.satk *= 1.20;
-      }
+    if (abilityId === "metalhead" && typeof ability !== "undefined" && ability.metalhead) {
+      __applyAvgOffense(__countAffected(ability.metalhead.id), 1.5);
     }
     // ── Speed-up families (prankster / galeWings / neuroforce). Pokechill
     // dispatches these as "move X executes 1.5× faster" — we approximate
@@ -7643,14 +7723,9 @@
       if (hasPhys) clone.bst.atk  *= 1.05;
       if (hasSpec) clone.bst.satk *= 1.05;
     }
-    // Sharpness — sharp-named moves ×1.5 (name-regex same as metalhead).
-    if (abilityId === "sharpness") {
-      let hasSharp = false;
-      for (const m of moves) if (m && /cut|slash|scissor|wing|claw|psychoCut/i.test(m)) { hasSharp = true; break; }
-      if (hasSharp) {
-        if (hasPhys) clone.bst.atk  *= 1.20;
-        if (hasSpec) clone.bst.satk *= 1.20;
-      }
+    // Sharpness — canonical ×1.5 via affectedBy.
+    if (abilityId === "sharpness" && typeof ability !== "undefined" && ability.sharpness) {
+      __applyAvgOffense(__countAffected(ability.sharpness.id), 1.5);
     }
     // Guard family — approximated as universal +6 % def/sdef.
     const GUARD_FAMILY = new Set([
@@ -8225,6 +8300,28 @@
       }
     } catch (e) { /* ignore */ }
 
+    // Phase E — climaTact (rarity 3 hidden): user's weather lasts
+    // +15 turns. Canonical from moveDictionary.js:561. Acts like a
+    // universal rock/seed for whatever weather the clone sets.
+    try {
+      if ((state.ability === "climaTact" || state.hiddenAbility === "climaTact")
+          && typeof saved !== "undefined" && saved && saved.weather
+          && saved.weatherTimer > 0) {
+        const SETTER_FOR_WEATHER = {
+          sunny: "drought", rainy: "drizzle", sandstorm: "sandStream",
+          hail: "snowWarning", foggy: "somberField",
+          electricTerrain: "electricSurge", grassyTerrain: "grassySurge",
+          mistyTerrain: "mistySurge",
+        };
+        const setter = SETTER_FOR_WEATHER[saved.weather];
+        if (setter && (state.ability === setter || state.hiddenAbility === setter)) {
+          saved.weatherTimer += 15;
+          saved.weatherCooldown = Math.max(saved.weatherCooldown || 0, saved.weatherTimer);
+          if (typeof updateWildBuffs === "function") updateWildBuffs();
+        }
+      }
+    } catch (e) { /* ignore */ }
+
     // Orb self-statuses (burn / poison clone turn 1).
     try {
       if (state.item === "flameOrb" && typeof wildBuffs === "object") { wildBuffs.burn = Math.max(wildBuffs.burn || 0, 5); if (typeof updateWildBuffs === "function") updateWildBuffs(); }
@@ -8642,6 +8739,16 @@
           try {
             const cd = (typeof pkmn === "object") ? pkmn[cid] : null;
             if (cd && cd.bst) cd.bst.sdef = (cd.bst.sdef || 0) * 1.30;
+          } catch (e) { /* ignore */ }
+        }
+        // Phase E — Brittle Armor (rarity 2): +50% satk when statused.
+        if ((state.ability === "brittleArmor" || state.hiddenAbility === "brittleArmor")
+            && !state.brittleArmorApplied
+            && /^(burn|freeze|paralysis|poisoned|sleep)$/.test(buff)) {
+          state.brittleArmorApplied = true;
+          try {
+            const cd = (typeof pkmn === "object") ? pkmn[cid] : null;
+            if (cd && cd.bst) cd.bst.satk = (cd.bst.satk || 0) * 1.50;
           } catch (e) { /* ignore */ }
         }
       } catch (e) { /* swallow */ }

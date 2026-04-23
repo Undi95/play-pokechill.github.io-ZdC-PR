@@ -831,7 +831,63 @@ trainer slot is picked from the tier-1 low-BST pool. Capped at 1
 surprise slot per trainer. `pickMovesetFor` picks up the species'
 genuine `unrestrictedLearning` flag.
 
-### 13. Phase D audit — bugs found post-integration
+### 13. Phase E audit — canonical engine alignment
+
+Full pass against `explore.js` damage formula + `moveDictionary.js`
+ability definitions + `testAbility` implementation revealed that the
+enemy-side dispatch on ZdC had **systematic multiplier understates**
+and **two mis-mapped ate-family types**. The audit also confirmed the
+fundamental reality: **Pokechill's engine reads ZERO ability, item,
+nature, or IV on the enemy side** — `testAbility(target, id)` is
+hard-coded to check `team[target]` slots only; `exploreCombatWild()`
+(enemy attack) reads only `.bst.*`, `.type` (STAB), and `saved.weather`
+from the enemy Pokémon. Every ability/item effect we assign to a clone
+must therefore be dispatched by us or it's cosmetic.
+
+**Multiplier corrections** (Pokechill canonical → our Phase E fix):
+
+| Ability | Canonical | Old Phase | Now |
+|---|---|---|---|
+| `strongJaw` | ×2 on fang | ×1.12 flat | ×2 via affectedBy, per-mon avg |
+| `toughClaws` | ×2 on claw | ×1.10 flat | ×2 via affectedBy, per-mon avg |
+| `hugePower` | ×2 physical | ×1.5 | ×2 |
+| `ironFist` | ×1.5 on punch | ×1.12 | ×1.5 via affectedBy |
+| `sharpness` | ×1.5 on sharp | ×1.20 name-regex | ×1.5 via affectedBy |
+| `megaLauncher` | ×1.5 on pulse | ×1.20 name-regex | ×1.5 via affectedBy |
+| `metalhead` | ×1.5 on head | ×1.20 name-regex | ×1.5 via affectedBy |
+| `technician` | ×1.5 on BP ≤ 60 | ×1.20 helper | ×1.5 via affectedBy |
+| `ate-family` | ×1.3 on normal | ×1.25 flat | ×1.3 per-mon avg |
+| `sheerForce` | ×1.25 | ×1.30 | ×1.25 via affectedBy |
+| `skillLink` | max-multihit ≈ ×1.4 | ×1.18 | ×1.4 via affectedBy |
+
+**Detection correction: name regex → `move[x].affectedBy`.** Pokechill
+auto-populates `affectedBy` at load (moveDictionary.js:5422+) for every
+ability → list of boosted moves. We now query it directly instead of
+fragile name regexes.
+
+**Ate-family mapping fixed:**
+- `chrysilate → bug` (not rock)
+- `gloomilate → dark` (not ghost)
+
+**New canonical abilities added:**
+- `libero` ×2 on fast moves (timer < default) — the "Libero + Extreme
+  Speed" priority synergy
+- `reckless` ×1.5 on slow moves
+- `normalize` ×1.3 universal
+- `climaTact` +15 weather turns when the clone sets its own weather
+- `brittleArmor` +50% satk on status
+
+**Per-mon averaging:** a 2-of-4-punch Iron Fist mon now gets avg
+`(2×1.5 + 2×1)/4 = 1.25×`; a pure-punch mon gets the full `×1.5`.
+Replaces the old flat multiplier that was both over- and under-
+approximating depending on moveset distribution.
+
+**Item inflation — per-mon split-aware + real `item.power()`:** type
+boosters now bump atk / satk independently based on how many matching-
+type moves exist in each split. Gems get +10% multiplier on non-STAB
+moves to approximate the canonical "enable STAB on non-STAB" effect.
+
+### 14. Phase D audit — bugs found post-integration
 
 Full audit after Phase C surfaced a cluster of issues, fixed in the
 same commit as the Factory-swap / Arena-judge / low-div fixes above.
